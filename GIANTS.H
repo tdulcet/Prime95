@@ -52,7 +52,7 @@ typedef giantstruct *giant;
  **************************************************************/
 
 /* Cleanup giants allocations, etc. */
-void	term_giants ();
+void	term_giants (void);
 
 /* Creates a new giant */
 giant 	newgiant(int numshorts);
@@ -117,6 +117,9 @@ void 	sladdg (long i, giant g);
 /* b += a. */
 void 	addg(giant a, giant b);
 
+/* g -= i, where i is an unsigned long */
+void 	ulsubg (unsigned long i, giant g);
+
 /* b -= a. */
 void 	subg(giant a, giant b);
 
@@ -149,6 +152,10 @@ int 	invg(giant n, giant x);
 /* General GCD, x:= GCD(n, x). */
 int 	gcdg(giant n, giant x);
 
+/* x becomes x^n, NO mod performed. */
+void power (giant x, int n);
+void powerg (giant x, giant n);
+
 /* num := [num/den], any positive den. */
 void 	powermod(giant x, int n, giant z);
 
@@ -161,9 +168,6 @@ void	make_recip(giant d, giant r);
 
 /* n := [n/d], d positive, using stored reciprocal directly. */
 void	divg_via_recip(giant d, giant r, giant n);
-
-/* n := n % d, d positive, using stored reciprocal directly. */
-void	modg_via_recip(giant d, giant r, giant n);
 
 /* stack handling functions. */
 static giant	popg(int);	/* Number of longs in data area */

@@ -1,16 +1,20 @@
-/* Copyright 1995-2000 Just For Fun Software, Inc. */
+/* Copyright 1995-2001 Just For Fun Software, Inc. */
 /* Author:  George Woltman */
 /* Email: woltman@alum.mit.edu */
 
 /* Include files */
 
 #include "prime.h"
+#ifdef __IBMC__
+#include <io.h>
+#endif
+#include <stdio.h>
 #include <string.h>
 
 /* Routine definitions */
 
-void rangeStatus ();
-void options_cpu ();
+void rangeStatus (void);
+void options_cpu (void);
 
 /* Get line from the user (stdin) */
 
@@ -123,7 +127,7 @@ loop:	get_line (buf);
 
 /* Wait for user input - gives the user time to read the screen */
 
-void askOK ()
+void askOK (void)
 {
 	char	str[80];
 	if (THREAD_KILL) return;
@@ -133,7 +137,7 @@ void askOK ()
 
 /* Ask user if he is satisfied with his dialog responses */
 
-int askOkCancel ()
+int askOkCancel (void)
 {
 	char	buf[80];
 	if (THREAD_KILL) return (FALSE);
@@ -153,6 +157,20 @@ int askYesNo (
 	get_line (buf);
 	if (buf[0] == 0) buf[0] = dflt;
 	return (buf[0] == 'Y' || buf[0] == 'y');
+}
+
+/* Ask user if he is satisfied with his dialog responses */
+
+int askYesNoCancel (
+	char	dflt)
+{
+	char	buf[80];
+	if (THREAD_KILL) return (FALSE);
+	printf (" Y=Yes, N=No, C=Cancel (%c): ", dflt);
+	get_line (buf);
+	if (buf[0] == 0) buf[0] = dflt;
+	return ((buf[0] == 'Y' || buf[0] == 'y') ? 0 :
+		(buf[0] == 'N' || buf[0] == 'N') ? 1 : 2);
 }
 
 /* Output a long string with a max of 75 characters to a line */
@@ -187,7 +205,7 @@ void outputLongLine (
 #define MSG_BIGONES4 "at http://www.mersenne.org/prize.htm.  Do you accept these rules\n"
 #define MSG_BIGONES5 "and still want to search for 10,000,000 digit primes"
 
-void test_primenet ()
+void test_primenet (void)
 {
 	int	m_primenet, m_dialup, m_work_dflt;
 	int	m_bigones, m_lucas, m_factor, m_dblchk;
@@ -271,7 +289,7 @@ done:	if (askOkCancel ()) {
 
 /* Test/User Information dialog */
 
-void test_user ()
+void test_user (void)
 {
 	char	m_name[80], m_email[80], m_userid[20];
 	char	m_password[20], m_compid[20];
@@ -345,7 +363,7 @@ void test_user ()
 
 /* Test/Vacation or Holiday dialog */
 
-void test_vacation ()
+void test_vacation (void)
 {
 	unsigned long m_vacation_days;
 	int	m_computer_on;
@@ -378,7 +396,7 @@ void test_vacation ()
 
 /* Output a status report for the range */
 
-void rangeStatus ()
+void rangeStatus (void)
 {
 	char	buf[2000];
 
@@ -389,7 +407,7 @@ void rangeStatus ()
 
 /* Advanced/Test dialog */
 
-void advanced_test ()
+void advanced_test (void)
 {
 	unsigned long m_p;
 #define NOTPRIMEERR "This number is not prime, there is no need to test it.\n"
@@ -411,7 +429,7 @@ loop:	m_p = 0;
 
 /* Advanced/Time dialog */
 
-void advanced_time ()
+void advanced_time (void)
 {
 	unsigned long m_p, m_iter;
 
@@ -428,7 +446,7 @@ void advanced_time ()
 
 /* Advanced/P-1 dialog */
 
-void advanced_pminus1 ()
+void advanced_pminus1 (void)
 {
 	unsigned long m_p, m_bound1, m_bound2;
 	int	m_plus1;
@@ -459,7 +477,7 @@ void advanced_pminus1 ()
 
 /* Advanced/ECM dialog */
 
-void advanced_ecm ()
+void advanced_ecm (void)
 {
 	unsigned long m_p, m_bound1, m_bound2, m_num_curves;
 	int	m_plus1;
@@ -497,7 +515,7 @@ void advanced_ecm ()
 
 /* Advanced/Priority dialog */
 
-void advanced_priority ()
+void advanced_priority (void)
 {
 	unsigned long m_priority;
 
@@ -515,7 +533,7 @@ void advanced_priority ()
 
 /* Advanced/Manual Communication dialog */
 
-void advanced_manualcomm ()
+void advanced_manualcomm (void)
 {
 	int	m_manual_comm, m_comm_now, m_new_dates;
 
@@ -541,9 +559,25 @@ void advanced_manualcomm ()
 	}
 }
 
+/* Advanced/Time dialog */
+
+void advanced_unreserve (void)
+{
+	unsigned long m_p;
+
+	m_p = 0;
+
+	outputLongLine ("\nUse this only if you are sure you will not be finishing this exponent.  The exponent will be assigned to someone else.  It is not fair to them if you test an exponent assigned to someone else.\n");
+	askNumNoDflt ("Exponent to unreserve", &m_p, MIN_PRIME, MAX_PRIME);
+	if (askOkCancel ()) {
+		unreserve (m_p);
+		communicateWithServer ();
+	}
+}
+
 /* Advanced/Quit Gimps dialog */
 
-void advanced_quit ()
+void advanced_quit (void)
 {
 
 	if (!USE_PRIMENET) {
@@ -553,9 +587,16 @@ void advanced_quit ()
 			IniDeleteAllLines (WORKTODO_FILE);
 		}
 	} else {
+		int	res;
 		outputLongLine (PRIMENET_QUIT);
-		if (askYesNo ('N')) {
-			writeResults ("Quitting GIMPS.\n");
+		res = askYesNoCancel ('C');
+		if (res == 0) {
+			OutputBoth ("Quitting GIMPS after current work completes.\n");
+			IniWriteInt (INI_FILE, "NoMoreWork", 1);
+			askOK ();
+		}
+		if (res == 1) {
+			OutputBoth ("Quitting GIMPS immediately.\n");
 			spoolMessage (999, NULL);
 			MANUAL_COMM |= 0x2;
 			CHECK_WORK_QUEUE = 1;
@@ -567,7 +608,7 @@ void advanced_quit ()
 
 /* Options/CPU dialog */
 
-void options_cpu ()
+void options_cpu (void)
 {
 	unsigned long m_cpu_type, m_speed, m_hours;
 	unsigned long m_day_memory, m_night_memory, max_mem;
@@ -575,10 +616,11 @@ void options_cpu ()
 	char m_end_time[13];
 
 again:	m_cpu_type =
-		(CPU_TYPE == 10) ? 0 : (CPU_TYPE == 9) ? 1 :
-		(CPU_TYPE == 8) ? 2 : (CPU_TYPE == 6) ? 3 :
-		(CPU_TYPE == 5) ? 4 : (CPU_TYPE == 4) ? 5 :
-		(CPU_TYPE == 11) ? 6 : (CPU_TYPE == 7) ? 7 : 8;
+		(CPU_TYPE == 12) ? 0 :
+		(CPU_TYPE == 10) ? 1 : (CPU_TYPE == 9) ? 2 :
+		(CPU_TYPE == 8) ? 3 : (CPU_TYPE == 6) ? 4 :
+		(CPU_TYPE == 5) ? 5 : (CPU_TYPE == 4) ? 6 :
+		(CPU_TYPE == 11) ? 7 : (CPU_TYPE == 7) ? 8 : 9;
 	m_speed = CPU_SPEED;
 	m_hours = CPU_HOURS;
 	m_day_memory = DAY_MEMORY;
@@ -590,11 +632,11 @@ again:	m_cpu_type =
 	/*if (isPentiumPro ()) limit = 9;
 	else if (isPentium ()) limit = 5;
 	else limit = 2;*/
-	printf ("CPU Type, 1=Pentium III, 2=Pentium II, 3=Celeron,\n");
-	printf ("          4=Pentium Pro, 5=Pentium, 6=486,\n");
-	askNum ("          7=AMD Athlon, 8=AMD K6, 9 = Cyrix", &m_cpu_type, 1, 9);
+	printf ("CPU Type, 1=Pentium 4, 2=Pentium III, 3=Pentium II,\n");
+	printf ("          4=Celeron, 5=Pentium Pro, 6=Pentium, 7=486,\n");
+	askNum ("          8=AMD Athlon, 9=AMD K6, 10=Cyrix", &m_cpu_type, 1, 10);
 	m_cpu_type--;
-	askNum ("CPU speed in MHz", &m_speed, 25, 1000);
+	askNum ("CPU speed in MHz", &m_speed, 25, 10000);
 	askNum ("Hours per day this program will run", &m_hours, 1, 24);
 
 	printf ("\nPlease see the readme.txt file for very important\n");
@@ -610,14 +652,15 @@ again:	m_cpu_type =
 	if (askOkCancel ()) {
 		unsigned int new_cpu_type, new_day_start_time, new_day_end_time;
 
-		new_cpu_type = (m_cpu_type == 0) ? 10 :
-			       (m_cpu_type == 1) ? 9 :
-			       (m_cpu_type == 2) ? 8 :
-			       (m_cpu_type == 3) ? 6 :
-			       (m_cpu_type == 4) ? 5 :
-			       (m_cpu_type == 5) ? 4 :
-			       (m_cpu_type == 6) ? 11 :
-			       (m_cpu_type == 7) ? 7 : 3;
+		new_cpu_type = (m_cpu_type == 0) ? 12 :
+			       (m_cpu_type == 1) ? 10 :
+			       (m_cpu_type == 2) ? 9 :
+			       (m_cpu_type == 3) ? 8 :
+			       (m_cpu_type == 4) ? 6 :
+			       (m_cpu_type == 5) ? 5 :
+			       (m_cpu_type == 6) ? 4 :
+			       (m_cpu_type == 7) ? 11 :
+			       (m_cpu_type == 8) ? 7 : 3;
 		if (CPU_SPEED != m_speed ||
 		    CPU_TYPE != new_cpu_type ||
 		    CPU_HOURS != m_hours) {
@@ -636,6 +679,7 @@ again:	m_cpu_type =
 			memSettingsChanged ();
 		CPU_SPEED = m_speed;
 		CPU_TYPE = new_cpu_type;
+		setCpuFlags ();
 		CPU_HOURS = m_hours;
 		DAY_MEMORY = m_day_memory;
 		NIGHT_MEMORY = m_night_memory;
@@ -664,7 +708,7 @@ again:	m_cpu_type =
 
 /* Options/Preferences dialog */
 
-void options_preferences ()
+void options_preferences (void)
 {
 	unsigned long m_iter, m_r_iter, m_disk_write_time;
 	unsigned long m_modem, m_retry, m_end_dates;
@@ -714,10 +758,10 @@ void options_preferences ()
 
 /* Help/About */
 
-void help_about ()
+void help_about (void)
 {
 	printf ("Mersenne Prime Finder - Version %s.2\n", VERSION);
-	printf ("Copyright 1996-2000 Just For Fun Software, Inc.\n");
+	printf ("Copyright 1996-2001 Just For Fun Software, Inc.\n");
 	printf ("Author: George Woltman\n");
 	printf ("Email:  woltman@alum.mit.edu\n");
 	askOK ();
@@ -725,7 +769,7 @@ void help_about ()
 
 /* Help/About PrimeNet Server */
 
-void help_about_server ()
+void help_about_server (void)
 {
 	struct primenetPingServerInfo pkt;
 
@@ -741,9 +785,29 @@ void help_about_server ()
 	askOK ();
 }
 
+/* Welcome Information dialog */
+
+void test_welcome (void)
+{
+	int	m_join = 1;
+
+	outputLongLine ("\nWelcome to GIMPS, the hunt for huge prime numbers.  You will be asked a few simple questions and then the program will contact the primenet server to get some work for your computer.  Good luck!\n");
+	outputLongLine ("\nAttention OVERCLOCKERS!!  Mprime has gained a reputation as a useful stress testing tool for people that enjoy pushing their hardware to the limit.  You are more than welcome to use this software for that purpose.  Please select the stress testing choice below to avoid interfering with the PrimeNet server.  Use the Options/CPU menu choice to make sure your cpu type was detected properly, then use the Options/Torture Test menu choice for your stress tests.  Also, read the stress.txt file.\n");
+	outputLongLine ("\nIf you want to both join GIMPS and run stress tests, then Join GIMPS and answer the questions.  After the server gets some work for you, stop mprime, then run mprime -m and choose Options/Torture Test.\n\n");
+	askYN ("Join Gimps? (Y=Yes, N=Just stress testing", &m_join);
+	if (m_join) {
+		test_user ();
+	} else {
+		IniWriteInt (INI_FILE, "StressTester", 1);
+		IniWriteInt (INI_FILE, "UsePrimenet", USE_PRIMENET = 0);
+		STARTUP_IN_PROGRESS = 0;
+		main_menu ();
+	}
+}
+
 /* Display the main menu */
 
-void main_menu ()
+void main_menu (void)
 {
 	unsigned long choice;
 
@@ -756,25 +820,23 @@ loop:	printf ("\n");
 	printf ("\t 4.  Test/Status\n");
 	printf ("\t 5.  Test/Continue\n");
 	printf ("\t 6.  Test/Exit\n");
-	printf ("\n");
 	printf ("\t 7.  Advanced/Test\n");
 	printf ("\t 8.  Advanced/Time\n");
 	printf ("\t 9.  Advanced/P-1\n");
 	printf ("\t10.  Advanced/ECM\n");
 	printf ("\t11.  Advanced/Priority\n");
 	printf ("\t12.  Advanced/Manual Communication\n");
-	printf ("\t13.  Advanced/Quit Gimps\n");
-	printf ("\n");
-	printf ("\t14.  Options/CPU\n");
-	printf ("\t15.  Options/Preferences\n");
-	printf ("\t16.  Options/Self Test\n");
+	printf ("\t13.  Advanced/Unreserve Exponent\n");
+	printf ("\t14.  Advanced/Quit Gimps\n");
+	printf ("\t15.  Options/CPU\n");
+	printf ("\t16.  Options/Preferences\n");
 	printf ("\t17.  Options/Torture Test\n");
-	printf ("\n");
-	printf ("\t18.  Help/About\n");
-	printf ("\t19.  Help/About PrimeNet Server\n");
+	printf ("\t18.  Options/Benchmark\n");
+	printf ("\t19.  Help/About\n");
+	printf ("\t20.  Help/About PrimeNet Server\n");
 	printf ("Your choice: ");
 	choice = get_number (0);
-	if (choice <= 0 || choice >= 20) {
+	if (choice <= 0 || choice >= 21) {
 		printf ("\t     Invalid choice\n");
 		goto loop;
 	}
@@ -856,29 +918,28 @@ loop:	printf ("\n");
 		advanced_manualcomm ();
 		break;
 
-/* Advanced/Quit Gimps dialog */
+/* Advanced/Unreserve exponent dialog */
 
 	case 13:
+		advanced_unreserve ();
+		break;
+
+/* Advanced/Quit Gimps dialog */
+
+	case 14:
 		advanced_quit ();
 		break;
 
 /* Options/CPU dialog */
 
-	case 14:
+	case 15:
 		options_cpu ();
 		break;
 
 /* Options/Preferences dialog */
 
-	case 15:
-		options_preferences ();
-		break;
-
-/* Options/Self Test */
-
 	case 16:
-		selfTest (0);
-		askOK ();
+		options_preferences ();
 		break;
 
 /* Options/Torture Test */
@@ -888,15 +949,22 @@ loop:	printf ("\n");
 		askOK ();
 		break;
 
-/* Help/About */
+/* Options/Benchmark Test */
 
 	case 18:
+		primeBench ();
+		askOK ();
+		break;
+
+/* Help/About */
+
+	case 19:
 		help_about ();
 		break;
 
 /* Help/About PrimeNet Server */
 
-	case 19:
+	case 20:
 		help_about_server ();
 		break;
 	}
