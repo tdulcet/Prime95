@@ -1,10 +1,12 @@
 # Standard options
 masm=ml /c /coff
 #masm=ml /c /coff /Fl /Sf /Sa
+cl=\msdev\bin\cl /I.. /I C:\msdev\include\ /O2 /GF /W3 /MT /c
+#cl=\msdev\bin\cl /I.. /I C:\msdev\include\ /O2 /GF /W3 /MT /Zi /c
 
 # Create 32-bit executables
 
-mult.obj: mult.asm mult.mac
+mult.obj: mult.asm mult.mac xmult.mac
     $(masm) mult.asm
 
 mult1.obj: mult1.asm mult.mac
@@ -91,6 +93,9 @@ mult4auq.obj: mult4aux.asm mult.mac normal.mac
 ecmhelp.obj: ecmhelp.asm
     $(masm) ecmhelp.asm
 
+cpuid.obj: cpuid.asm
+    $(masm) cpuid.asm
+
 factor64.obj: factor64.asm
     $(masm) factor64.asm
 
@@ -115,6 +120,27 @@ dummy24.obj: dummy24.asm
 dummy28.obj: dummy28.asm
     $(masm) dummy28.asm
 
+dummyt4.obj: dummyt4.asm
+    $(masm) dummyt4.asm
+
+dummyt8.obj: dummyt8.asm
+    $(masm) dummyt8.asm
+
+dummyt12.obj: dummyt12.asm
+    $(masm) dummyt12.asm
+
+dummyt16.obj: dummyt16.asm
+    $(masm) dummyt16.asm
+
+dummyt20.obj: dummyt20.asm
+    $(masm) dummyt20.asm
+
+dummyt24.obj: dummyt24.asm
+    $(masm) dummyt24.asm
+
+dummyt28.obj: dummyt28.asm
+    $(masm) dummyt28.asm
+
 xmult1.obj: xmult1.asm xmult.mac xlucas.mac xfft1.mac
     $(masm) xmult1.asm
 
@@ -138,4 +164,14 @@ xmult3a.obj: xmult3a.asm xmult.mac xpass2.mac xlucas.mac
 
 xmult3ax.obj: xmult3ax.asm xmult.mac xnormal.mac
     $(masm) xmult3ax.asm
+
+# Create optimized giants.obj
+
+giants.obj: ..\giants.c ..\giants.h
+    $(cl) giants.cpp
+
+# Compile special services code
+
+service.obj: service.c
+    $(cl) service.c
 

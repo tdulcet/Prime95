@@ -1,9 +1,5 @@
 /*
- * Common routines and variables used by Prime95, Saver95, and NTPrime
- *
- * Comm95a contains information used only during setup
- * Comm95b contains information used only during execution
- * Comm95c contains information used during setup and execution
+ * Windoows specific routines used by PRP program
  */ 
 
 /* Common global variables */
@@ -14,7 +10,7 @@ HANDLE	WORKER_THREAD = 0;
 
 /* Is this Windows 95/98 or Windows NT? */
 
-int isWindows95 ()
+int isWindows95 (void)
 {
 	OSVERSIONINFO info;
 
@@ -27,7 +23,7 @@ int isWindows95 ()
 
 /* Set the thread priority correctly */
 
-void SetPriority ()
+void SetPriority (void)
 {
 	SetPriorityClass (GetCurrentProcess (),
 		(PRIORITY > 6) ? NORMAL_PRIORITY_CLASS : IDLE_PRIORITY_CLASS);
@@ -43,31 +39,38 @@ void SetPriority ()
 		SetThreadAffinityMask (WORKER_THREAD, 1 << CPU_AFFINITY);
 }
 
-/* Call routines provided by Intel to guess the cpu type and speed */
-
-void guessCpuType ()
-{
-	WORD cpuid;
-	struct FREQ_INFO x;
-
-	cpuid = wincpuid ();
-	if (cpuid & CLONE_MASK) {
-		CPU_TYPE = 3;
-		CPU_SPEED = 166;
-	} else {
-		CPU_TYPE = cpuid;
-		x = cpuspeed (0);
-		CPU_SPEED = x.norm_freq;
-		if (CPU_SPEED == 0) CPU_SPEED = 100;
-	}
-}
-
 /* Return the number of CPUs in the system */
 
-unsigned long num_cpus ()
+unsigned long num_cpus (void)
 {
 	SYSTEM_INFO sys;
 
 	GetSystemInfo (&sys);
 	return (sys.dwNumberOfProcessors);
+}
+
+/* Routines to access the high resolution performance counter */
+
+int isHighResTimerAvailable (void)
+{
+	LARGE_INTEGER large;
+	return (QueryPerformanceCounter (&large));
+}
+
+double getHighResTimer (void)
+{
+	LARGE_INTEGER large;
+
+	QueryPerformanceCounter (&large);
+	return ((double) large.HighPart * 4294967296.0 +
+		(double) large.LowPart);
+}
+
+double getHighResTimerFrequency (void)
+{
+	LARGE_INTEGER large;
+
+	QueryPerformanceFrequency (&large);
+	return ((double) large.HighPart * 4294967296.0 +
+		(double) large.LowPart);
 }

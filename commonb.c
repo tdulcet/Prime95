@@ -29,9 +29,10 @@ char ERRMSG0[] = "Iteration: %ld/%ld, %s";
 char ERRMSG1A[] = "ERROR: ILLEGAL SUMOUT\n";
 char ERRMSG1B[] = "ERROR: SUM(INPUTS) != SUM(OUTPUTS), %.16g != %.16g\n";
 char ERRMSG1C[] = "ERROR: ROUND OFF (%.10g) > 0.40\n";
-char ERRMSG2[] = "Possible hardware failure, consult the readme file.\n";
+char ERRMSG2[] = "Possible hardware failure, consult the readme.txt file.\n";
 char ERRMSG3[] = "Continuing from last save file.\n";
 char ERRMSG4[] = "Waiting five minutes before restarting.\n";
+char ERRMSG5[] = "For added safety, redoing iteration using a slower, more reliable method.\n";
 char ERROK[] = "Disregard last error.  Result is reproducible and thus not a hardware problem.\n";
 char WRITEFILEERR[] = "Error writing intermediate file: %s\n";
 char DONE_MSG1[] = "There are no more exponents to test.\n";
@@ -55,7 +56,7 @@ int isKnownMersennePrime (
 		p == 21701 || p == 23209 || p == 44497 || p == 86243 ||
 		p == 110503 || p == 132049 || p == 216091 || p == 756839 ||
 		p == 859433 || p == 1257787 || p == 1398269 || p == 2976221 ||
-		p == 3021377 || p == 6972593);
+		p == 3021377 || p == 6972593 || p == 13466917);
 }
 
 /* Routine to set the stop timer when available memory settings change */
@@ -432,6 +433,8 @@ int readFileData (
 				goto err;
 			x = y;
 		}
+		if ((x & 0xFF000000) != 0 && (x & 0xFF000000) != 0xFF000000)
+			goto err;
 		sum += x;
 		if (x) zero = FALSE;
 		set_fft_value (LLDATA, i, x);
@@ -476,11 +479,10 @@ void updateWorkToDo (
 {
 	unsigned int i;
 
-
 /* Note if the well-behaved-work-option is on, then just */
 /* delete the first line and write the file every half hour */
 
-	if (WELL_BEHAVED_WORK) {
+	if (WELL_BEHAVED_WORK && work_type == WORK_FACTOR) {
 		static time_t last_time_written = 0;
 		time_t	current_time;
 		IniDeleteLine (WORKTODO_FILE, 1);
@@ -594,7 +596,8 @@ int isPriorityWork (
 	if (IniGetInt (INI_FILE, "SequentialWorkToDo", 1)) return (FALSE);
 	if ((w->work_type == WORK_TEST ||
 	     w->work_type == WORK_DBLCHK) &&
-	    (w->bits < factorLimit (w->p, 0) || !w->pminus1ed)) return (TRUE);
+	    (w->bits < factorLimit (w->p, w->work_type) || !w->pminus1ed))
+		return (TRUE);
 	return (FALSE);
 }
 
@@ -802,7 +805,9 @@ void clear_timer (
 void start_timer (
 	int	i)
 {
-	if (RDTSC_TIMING && (CPU_FLAGS & CPU_RDTSC)) {
+	if (RDTSC_TIMING < 10) {
+		timers[i] -= getHighResTimer ();
+	} else if (RDTSC_TIMING > 10 && (CPU_FLAGS & CPU_RDTSC)) {
 		unsigned long hi, lo;
 		rdtsc (&hi, &lo);
 		timers[i] -= (double) hi * 4294967296.0 + lo;
@@ -816,7 +821,9 @@ void start_timer (
 void end_timer (
 	int	i)
 {
-	if (RDTSC_TIMING && (CPU_FLAGS & CPU_RDTSC)) {
+	if (RDTSC_TIMING < 10) {
+		timers[i] += getHighResTimer ();
+	} else if (RDTSC_TIMING > 10 && (CPU_FLAGS & CPU_RDTSC)) {
 		unsigned long hi, lo;
 		rdtsc (&hi, &lo);
 		timers[i] += (double) hi * 4294967296.0 + lo;
@@ -837,7 +844,9 @@ void divide_timer (
 double timer_value (
 	int	i)
 {
-	if (RDTSC_TIMING && (CPU_FLAGS & CPU_RDTSC))
+	if (RDTSC_TIMING < 10)
+		return (timers[i] / getHighResTimerFrequency ());
+	else if (RDTSC_TIMING > 10 && (CPU_FLAGS & CPU_RDTSC))
 		return (timers[i] / CPU_SPEED / 1000000.0);
 	else
 		return (timers[i] / 1000.0);
@@ -854,28 +863,45 @@ void print_timer (
 	int	flags)
 {
 	double	t;
-	int	style;
 	char	buf[40];
+
+/* The timer could be less than zero if the computer went into hibernation. */
+/* Hibernation is where the memory image is saved to disk and the computer */
+/* shut off.  Upon power up the memory image is restored but the RDTSC */
+/* timestamp counter has been reset to zero. */
+
+	t = timer_value (i);
+	if (t < 0.0) {
+		strcpy (buf, "Unknown");
+		timers[i] = 0.0;
+	}
 
 /* Format the timer value in one of several styles */
 
-	t = timer_value (i);
-	style = IniGetInt (INI_FILE, "TimingOutput", 0);
-	if (style == 0) {
-		if (flags & TIMER_MS) style = 4;
-		else style = 1;
+	else {
+		int	style;
+
+		style = IniGetInt (INI_FILE, "TimingOutput", 0);
+		if (style == 0) {
+			if (flags & TIMER_MS) style = 4;
+			else style = 1;
+		}
+
+		if (style == 1)
+			sprintf (buf, "%.3f sec.", t);
+		else if (style == 2)
+			sprintf (buf, "%.1f ms.", t * 1000.0);
+		else if (style == 3)
+			sprintf (buf, "%.2f ms.", t * 1000.0);
+		else
+			sprintf (buf, "%.3f ms.", t * 1000.0);
+		if (RDTSC_TIMING == 12 && (CPU_FLAGS & CPU_RDTSC)) {
+			sprintf (buf+strlen(buf), " (%.0f clocks)", timers[i]);
+		}
 	}
-	if (style == 1)
-		sprintf (buf, "%.3f sec.", t);
-	else if (style == 2)
-		sprintf (buf, "%.1f ms.", t * 1000.0);
-	else if (style == 3)
-		sprintf (buf, "%.2f ms.", t * 1000.0);
-	else
-		sprintf (buf, "%.3f ms.", t * 1000.0);
-	if (RDTSC_TIMING == 2 && (CPU_FLAGS & CPU_RDTSC)) {
-		sprintf (buf+strlen(buf), " (%.0f clocks)", timers[i]);
-	}
+
+/* Append optional newline */
+
 	if (flags & TIMER_NL) strcat (buf, "\n");
 
 /* Clear the timer */
@@ -893,14 +919,147 @@ void print_timer (
 
 /* More utility routines */
 
+static int PAUSED = FALSE;
+
+int pauseWhileRunning ()
+{
+	int	i;
+static	time_t	last_check = 0;
+static	int	how_often = -1;
+
+/* In most installations, there is no pause list.  Return quickly. */
+
+	if (PAUSE_WHILE_RUNNING == NULL) return (TRUE);
+
+/* Only check the paused list every 10 seconds */
+
+	if (how_often < 0)
+		how_often = IniGetInt (INI_FILE, "PauseCheckInterval", 10);
+	if (how_often) {
+		time_t	current_time;
+		time (&current_time);
+		if (current_time < last_check + how_often) return (TRUE);
+		last_check = current_time;
+	}
+
+/* Check if a process is running such that we should pause */
+
+	if (! checkPauseList ()) return (TRUE);
+	PAUSED = TRUE;
+
+/* Every 10 seconds see if we should resume processing.  More frequently */
+/* see if we should write a save file and stop processing - most likely */
+/* due to a shutdown. */
+
+	for ( ; ; ) {
+		for (i = 0; i < 20; i++) {
+			Sleep (500);
+			if (escapeCheck ()) {
+				PAUSED = FALSE;
+				return (FALSE);
+			}
+		}
+		if (! checkPauseList ()) {
+			OutputStr ("Resuming processing.\n");
+			PAUSED = FALSE;
+			return (TRUE);
+		}
+	}
+}
+
+int isInPauseList (
+	char	*program_name)
+{
+	char	buf[512];
+	char	**p;
+
+	strcpy (buf, program_name);
+	strupper (buf);
+	for (p = PAUSE_WHILE_RUNNING; *p; p++) {
+		if (strstr (buf, *p) != NULL) {
+			if (!PAUSED) {
+				sprintf (buf,
+					 "Pausing because %s is running.\n",
+					 program_name);
+				OutputStr (buf);
+			}
+			return (TRUE);
+		}
+	}
+	return (FALSE);
+}
+
 /* Prepare for making a factoring run */
 
-void factorSetup (void)
+void factorSetup (unsigned long p)
 {
 
 /* Allocate 1MB memory for factoring */
 
-	SRCARG = FACDATA = malloc (1000000);
+	if (FACDATA == NULL) FACDATA = malloc (1000000);
+
+/* Call the factoring setup assembly code */
+
+	FACLSW = p;
+	SRCARG = FACDATA;
+	setupf ();
+
+/* If using the SSE2 factoring code, do more initialization */
+/* We need to initialize much of the following data: */
+/*	XMM_BITS30		DD	0,3FFFFFFFh,0,3FFFFFFFh
+	XMM_INITVAL		DD	0,0,0,0
+	XMM_INVFAC		DD	0,0,0,0
+	XMM_I1			DD	0,0,0,0
+	XMM_I2			DD	0,0,0,0
+	XMM_F1			DD	0,0,0,0
+	XMM_F2			DD	0,0,0,0
+	XMM_F3			DD	0,0,0,0
+	XMM_TWO_120_MODF1	DD	0,0,0,0
+	XMM_TWO_120_MODF2	DD	0,0,0,0
+	XMM_TWO_120_MODF3	DD	0,0,0,0
+	XMM_INIT120BS		DD	0,0
+	XMM_INITBS		DD	0,0
+	XMM_BS			DD	0,0
+	XMM_SHIFTER		DD	48 DUP (0)
+	TWO_TO_FACSIZE_PLUS_62	DQ	0.0
+	SSE2_LOOP_COUNTER	DD	0 */
+/* The address to XMM_BITS30 was returned in SRCARG. */
+
+	if (CPU_FLAGS & CPU_SSE2) {
+		unsigned long i, bits_in_factor;
+		unsigned long *xmm_data;
+
+/* Compute the number of bits in the factors we will be testing */
+
+		if (FACHSW) bits_in_factor = 64, i = FACHSW;
+		else if (FACMSW) bits_in_factor = 32, i = FACMSW;
+		else return;
+		while (i) bits_in_factor++, i >>= 1;
+
+/* Factors 63 bits and below use the non-SSE2 code */
+
+		if (bits_in_factor <= 63) return;
+
+/* Set XMM_SHIFTER values (the first shifter value is not used). */
+/* Also compute the initial value. */
+
+		xmm_data = (unsigned long *) SRCARG;
+		for (i = 0; p > bits_in_factor + 59; i++) {
+			xmm_data[52+i*2] = (p & 1) ? 1 : 0;
+			p >>= 1;
+		}
+		xmm_data[4] =			/* XMM_INITVAL */
+		xmm_data[6] = p >= 90 ? 0 : (1 << (p - 60));
+		xmm_data[44] = 62 - (120 - bits_in_factor);/* XMM_INIT120BS */
+		xmm_data[46] = 62 - (p - bits_in_factor);/* XMM_INITBS */
+		xmm_data[100] = i;		/* SSE2_LOOP_COUNTER */
+		*(double *)(&xmm_data[98]) = pow (2.0, bits_in_factor + 62);
+						/* TWO_TO_FACSIZE_PLUS_62 */
+
+/* Set XMM_BS to 60 - (120 - fac_size + 1) as defined in factor64.mac */
+
+		xmm_data[48] = bits_in_factor - 61;
+	}
 }
 
 /* Cleanup after making a factoring run */
@@ -911,6 +1070,7 @@ void factorDone (void)
 /* Free factoring data */
 
 	free (FACDATA);
+	FACDATA = NULL;
 }
 
 /* Prepare for running a Lucas-Lehmer test */
@@ -970,7 +1130,7 @@ static	int	first_call = TRUE;
 
 again:	if (SLEEP_TIME) {
 		time_t	current_time;
-		char	buf[30];
+		char	buf[80];
 		sprintf (buf, "Sleeping until %s\n", ctime (&SLEEP_TIME));
 		OutputStr (buf);
 		title ("Sleeping");
@@ -1078,7 +1238,7 @@ again:	if (SLEEP_TIME) {
 /* should be a prime number, bounded by values we can handle, and we */
 /* should never be asked to factor a number more than we are capable of. */
 
-	if (pass == 1 && !isPrime (w.p) &&
+	if (!isPrime (w.p) &&
 	    w.work_type != WORK_ECM && w.work_type != WORK_PMINUS1 &&
 	    w.work_type != WORK_ADVANCEDFACTOR) {
 		char	buf[80];
@@ -1096,7 +1256,7 @@ again:	if (SLEEP_TIME) {
 		goto did_some_work;
 	}
 	if (w.work_type == WORK_FACTOR &&
-	    (w.p < 727 || w.p > MAX_FACTOR || w.bits >= factorLimit (w.p, 1))) {
+	    (w.p < 727 || w.p > MAX_FACTOR || w.bits >= factorLimit (w.p, w.work_type))) {
 		char	buf[100];
 		sprintf (buf, "Error: Work-to-do file contained bad factoring assignment: %ld,%d\n", w.p, w.bits);
 		LogMsg (buf);
@@ -1124,10 +1284,14 @@ readerr:		sprintf (buf, READFILEERR, filename);
 			goto readloop;
 		}
 
-/* Type 2 files are factoring continuation files */
-/* Type 3 files are Advanced / Factoring continuation files */
+/* Type 3 files are obsolete Advanced / Factoring continuation files */
 
-		if (type != 2 && type != 3) {
+		if (type == 3) goto readerr;
+
+/* Type 2 files are factoring continuation files */
+/* Type 4 files are Advanced / Factoring continuation files */
+
+		if (type < 2 || type > 4) {
 
 /* Deduce the fftlen from the type field */
 
@@ -1159,7 +1323,9 @@ readerr:		sprintf (buf, READFILEERR, filename);
 	      ((pass == 1 && !sequential) || pass == 2) &&
 	      ! IniGetInt (INI_FILE, "SkipTrialFactoring", 0))) &&
 	    (fd == 0 || fftlen == 0) &&
-	    w.bits < factorLimit (w.p, w.work_type == WORK_FACTOR)) {
+	    w.bits < factorLimit (w.p,
+			          w.work_type != WORK_PFACTOR ? w.work_type :
+			          w.pminus1ed ? WORK_DBLCHK : WORK_TEST)) {
 		int	res;
 		if (! primeFactor (w.p, w.bits, &res, w.work_type, fd))
 			goto check_stop_code;
@@ -1190,6 +1356,7 @@ readerr:		sprintf (buf, READFILEERR, filename);
 	      ((pass == 1 && !sequential) || pass == 2) &&
 	      (fd == 0 || fftlen == 0 || counter < w.p / 2)))) {
 		if (fd) _close (fd);
+		if (! pick_fft_size (w.p)) goto check_stop_code;
 		if (! pfactor (&w)) {
 			if (STOP_REASON != STOP_NOT_ENOUGH_MEM) goto check_stop_code;
 		} else
@@ -1205,7 +1372,8 @@ readerr:		sprintf (buf, READFILEERR, filename);
 
 /* Setup */
 
-		lucasSetup (w.p, fftlen);
+		if (! pick_fft_size (w.p)) goto check_stop_code;
+		lucasSetup (w.p, fftlen ? fftlen : advanced_map_exponent_to_fftlen (w.p));
 
 /* Read the initial data from the file, on failure try the backup */
 /* intermediate file. */
@@ -1218,14 +1386,14 @@ readerr:		sprintf (buf, READFILEERR, filename);
 
 /* Handle case where the save file was for a different FFT length than */
 /* we would prefer to use.  This can happen, for example, when upgrading */
-/* to a Pentium 4 with its SSE2-based FFT using less precicion. */
+/* to a Pentium 4 with its SSE2-based FFT using less precision. */
 
-			if (fftlen != map_exponent_to_fftlen (w.p, 0)) {
+			if (fftlen != advanced_map_exponent_to_fftlen (w.p)) {
 				giant	g;
 				g = newgiant ((w.p + 32) / sizeof (short));
 				gwtobinary (LLDATA, g);
 				lucasDone ();
-				lucasSetup (w.p, 0);
+				lucasSetup (w.p, advanced_map_exponent_to_fftlen (w.p));
 				binarytogw (g, LLDATA);
 				free (g);
 			}
@@ -1274,6 +1442,7 @@ readerr:		sprintf (buf, READFILEERR, filename);
 /* See if this is an P-1 factoring line */
 
 	if (w.work_type == WORK_PMINUS1 && pass == 2) {
+		if (! pick_fft_size (w.p)) goto check_stop_code;
 		if (! pminus1 (w.p, w.B1, w.B2_start, w.B2_end, w.plus1, FALSE))
 			goto check_stop_code;
 		goto did_some_work;
@@ -1294,7 +1463,7 @@ readerr:		sprintf (buf, READFILEERR, filename);
 
 	if (STOP_TIME) {
 		time_t	current_time;
-		char	buf[30];
+		char	buf[80];
 		sprintf (buf, "Sleeping until %s\n", ctime (&STOP_TIME));
 		OutputStr (buf);
 		title ("Sleeping");
@@ -1385,6 +1554,170 @@ void lucas_fixup (
 	gwsetaddin (word, addin);
 }
 
+/* For exponents that are near an FFT limit, do 1000 sample iterations */
+/* to see if we should use the smaller or larger FFT size.  We examine */
+/* the average roundoff error to determine which FFT size to use. */
+
+int pick_fft_size (
+	unsigned long p)
+{
+	char	buf[120];
+	double	softpct, total_error, avg_error, max_avg_error;
+	unsigned long small_fftlen, large_fftlen, fftlen;
+	int	i;
+
+/* We don't do this for small exponents.  We've not studied the average */
+/* error enough on smaller FFT sizes to intelligently pick the FFT size. */
+/* Also, for really large exponents there is no larger FFT size to use! */
+
+	if (p <= 5000000) return (TRUE);
+	if (p >= 75000000) return (TRUE);
+
+/* Get the info on how what percentage of exponents on either side of */
+/* an FFT crossover we will do this 1000 iteration test. */
+
+	IniGetString (INI_FILE, "SoftCrossover", buf, sizeof (buf), "0.2");
+	softpct = atof (buf) / 100.0;
+
+/* If this exponent is not close to an FFT crossover, then we are done */
+
+	small_fftlen = map_exponent_to_fftlen (
+			(unsigned long) ((1.0 - softpct) * p),
+			GW_MERSENNE_MOD);
+	large_fftlen = map_exponent_to_fftlen (
+			(unsigned long) ((1.0 + softpct) * p),
+			GW_MERSENNE_MOD);
+	if (small_fftlen == large_fftlen) return (TRUE);
+
+/* If we've already picked an FFT length, then return */
+
+	if (fftlen_from_ini_file (p)) return (TRUE);
+
+/* Let the user be more conservative or more aggressive in picking the */
+/* acceptable average error.  By default, we accept an average error */
+/* between 0.241 and 0.243 depending on the FFT size. */
+
+	max_avg_error = 0.241 + 0.002 *
+		(log (small_fftlen) - log (262144.0)) /
+		(log (4194304.0) - log (262144.0));
+	IniGetString (INI_FILE, "SoftCrossoverAdjust", buf, sizeof (buf), "0");
+	max_avg_error += atof (buf);
+
+/* Print message to let user know what is going on */
+
+	sprintf (buf,
+		 "Trying 1000 iterations for exponent %ld using %dK FFT.\n",
+		 p, small_fftlen / 1024);
+	OutputBoth (buf);
+	sprintf (buf,
+		 "If average roundoff error is above %.5g, then a larger FFT will be used.\n",
+		 max_avg_error);
+	OutputBoth (buf);
+
+/* Init the FFT code using the smaller FFT size */
+
+	lucasSetup (p, small_fftlen);
+
+/* Fill data space with random values then do one squaring to make */
+/* the data truly random. */
+
+	generateRandomData ();
+	gwsetnormroutine (0, TRUE, 0);
+	gwstartnextfft (TRUE);
+	gwsquare (LLDATA);
+
+/* Average the roundoff error over a 1000 iterations. */
+
+	for (i = 0, total_error = 0.0; ; ) {
+		MAXERR = 0.0;
+		gwsquare (LLDATA);
+		total_error += MAXERR;
+		if (escapeCheck ()) {
+			lucasDone ();
+			return (FALSE);
+		}
+		if (++i == 1000) break;
+		if (i % 100 == 0) {
+			sprintf (buf,
+				 "After %d iterations average roundoff error is %.5g.\n",
+				 i, total_error / (double) i);
+			OutputStr (buf);
+		}
+	}
+	avg_error = total_error / 1000.0;
+	lucasDone ();
+
+/* Now decide which FFT size to use based on the average error. */
+/* Save this info in local.ini so that we don't need to do this again. */
+/* We write the SSE2 flag to the INI file so that it won't cause a problem */
+/* if the local.ini file is copied between P3 and P4 machines. */
+
+	fftlen = (avg_error <= max_avg_error) ? small_fftlen : large_fftlen;
+	sprintf (buf, "%ld,%ld,%d", p, fftlen, CPU_FLAGS & CPU_SSE2 ? 1 : 0);
+	IniWriteString (LOCALINI_FILE, "SoftCrossoverData", buf);
+
+/* Output message to user informing him of the outcome. */
+
+	sprintf (buf,
+		 "Final average roundoff error is %.5g, using %dK FFT for exponent %ld.\n",
+		 avg_error, fftlen / 1024, p);
+	OutputBoth (buf);
+	return (TRUE);
+}
+
+/* Test if we are near the maximum exponent this fft length can test */
+
+int exponent_near_fft_limit ()
+{
+	unsigned long max_exponent;
+	char	pct[30];
+
+	max_exponent = map_fftlen_to_max_exponent (FFTLEN, GW_MERSENNE_MOD);
+	IniGetString (INI_FILE, "NearFFTLimitPct", pct, sizeof(pct), "0.5");
+	return (PARG > (100.0 - atof (pct)) / 100.0 * max_exponent);
+}
+
+/* Do an LL iteration very carefully.  This is done after a normal */
+/* iteration gets a roundoff error above 0.40.  This careful iteration */
+/* will not generate a roundoff error. */
+
+void careful_iteration (
+	gwnum	x,			/* Number to square */
+	unsigned long *units_bit)	/* Units bit (if subtracting two) */
+{
+	gwnum	hi, lo;
+	unsigned long i;
+
+/* Copy the data to hi and lo.  Zero out half the FFT data in each. */
+
+	hi = gwalloc ();
+	lo = gwalloc ();
+	gwcopy (x, hi);
+	gwcopy (x, lo);
+	for (i = 0; i < FFTLEN/2; i++) set_fft_value (hi, i, 0);
+	for ( ; i < FFTLEN; i++) set_fft_value (lo, i, 0);
+
+/* Now do the squaring using three multiplies and adds */
+
+	gwsetnormroutine (0, 0, 0);
+	gwstartnextfft (0);
+	gwsetaddin (0, 0);
+	gwfft (hi, hi);
+	gwfft (lo, lo);
+	gwfftfftmul (lo, hi, x);
+	gwfftfftmul (hi, hi, hi);
+	if (units_bit != NULL) lucas_fixup (units_bit);
+	gwfftfftmul (lo, lo, lo);
+	gwaddquick (x, x);
+	gwaddquick (hi, x);
+	gwadd (lo, x);
+
+/* Free memory and return */
+
+	gwfree (hi);
+	gwfree (lo);
+}
+
 /* Do the Lucas-Lehmer test */
 
 int prime (
@@ -1399,14 +1732,14 @@ int prime (
 	double	reallyminerr = 1.0;
 	double	reallymaxerr = 0.0;
 	int	priority_work = 0;
-	int	escaped = 0;
-	int	saving;
+	int	escaped, saving, near_fft_limit, sleep5;
 	unsigned long i, high32, low32;
 	int	isPrime, rc;
 	char	buf[160];
 	time_t	start_time, current_time;
 	unsigned long interimFiles, interimResidues;
 static	unsigned long last_counter = 0;		/* Iteration of last error */
+static	int	maxerr_recovery_mode = 0;	/* Big roundoff err rerun */
 
 /* A new option to create interim save files every N iterations. */
 /* This allows two machines to simultanously work on the same exponent */
@@ -1481,21 +1814,15 @@ static	unsigned long last_counter = 0;		/* Iteration of last error */
 		OutputStr (buf);
 	}
 
-/* Special hack for Emil Steen who got a roundoff error of 0.4915!!! */ 
-/* This occured when continuing a v18 exponent that now uses a larger */
-/* FFT size.  Since the error is greater than 0.48 he got hung in a loop. */
-/* Since we have no idea if the roundoff error was 0.4915 or the deadly */
-/* 0.5085, we will rotate the data in hopes of producing friendlier */
-/* values in the FFT. */
+/* If we are near the maximum exponent this fft length can test, then we */
+/* will error check all iterations */
 
-	if (IniGetInt (INI_FILE, "ShiftHack", 0)) {
-		gwadd (LLDATA, LLDATA);
-		units_bit = (units_bit + 1) % p;
-	}
+	near_fft_limit = exponent_near_fft_limit ();
 
 /* Compute numbers in the lucas series, write out every 30 minutes to a file */
 
 	iters = 0;
+	escaped = 0;
 	while (counter < p) {
 		int	stopping, echk;
 
@@ -1506,59 +1833,99 @@ static	unsigned long last_counter = 0;		/* Iteration of last error */
 
 /* Every so often, communicate with the server. */
 /* Even more rarely, set flag to see if we have enough work queued up. */
-/* Also, see if we should switch to factoring.  This is sometimes done */
+
+		if ((counter & 0x3F) == 0) {
+			EXP_PERCENT_COMPLETE = (double) counter / (double) p;
+			if (!communicateWithServer ()) escaped = 1;
+			if (!pauseWhileRunning ()) escaped = 1;
+
+/* See if we should switch to factoring.  This is sometimes done */
 /* when we get a new assignment that hasn't been factored.  To be sure */
 /* that we will be able to immediately startup a LL test when this one */
 /* completes, we will factor the next exponent and then come back to */
 /* finish the LL test of this exponent. */
 
-		if ((counter & 0x3F) == 0) {
-			EXP_PERCENT_COMPLETE = (double) counter / (double) p;
 			if ((counter & 0xFFFF) == 0) {
-				ConditionallyUpdateEndDates ();
-				CHECK_WORK_QUEUE = 1;
-			}
-			if (!communicateWithServer ()) escaped = 1;
-			if ((counter & 0xFFFF) == 0) {
+				unsigned long sets;
+				double	timing, iters_per_day;
 				if (getPriorityWork ()) priority_work = 1;
-				updateRollingAverage (
-					map_fftlen_to_timing (
+
+/* In an effort to reduce wild fluctuations in the rolling average */
+/* we will try to update the rolling average only twice a day. */
+
+				timing = map_fftlen_to_timing (
 						FFTLEN, GW_MERSENNE_MOD,
-						CPU_TYPE, CPU_SPEED) *
-					65536.0 * 24.0 / CPU_HOURS);
-				startRollingAverage ();
+						CPU_TYPE, CPU_SPEED);
+				iters_per_day = CPU_HOURS * 3600.0 / timing;
+				sets = (unsigned long) (iters_per_day / 2.0 / 65536.0);
+				if (sets == 0) sets = 1;
+				if ((counter >> 16) % sets == 0) {
+					updateRollingAverage (
+						timing * sets * 65536.0 *
+						24.0 / CPU_HOURS);
+					startRollingAverage ();
+				}
 			}
 		}
 
 /* Error check the last 50 iterations, before writing an */
 /* intermediate file (either user-requested stop or a */
 /* 30 minute interval expired), and every 128th iteration. */
+/* Also save right after a we pass an errored iteration and several */
+/* iterations before retesting an errored iteration so that we don't */
+/* have to backtrack very far to do a careful_iteration	(we don't do the */
+/* iteration immediately before because on the P4 a save operation will */
+/* change the FFT data and make the error non-reproducible. */
 
 		escaped |= stopCheck ();
-		time (&current_time);
-		saving = (current_time - start_time > write_time ||
-			  counter == last_counter);
+		saving = (counter == last_counter-8 || counter == last_counter);
 		stopping = escaped || priority_work;
-		echk = stopping || saving || ERRCHK || (counter >= p - 50) ||
-		       (counter & 127) == 0;
+		echk = stopping || saving || near_fft_limit || ERRCHK || (counter >= p - 50);
+		if ((counter & 127) == 0) {
+			echk = 1;
+			time (&current_time);
+			saving |= (current_time - start_time > write_time);
+		}
 		MAXERR = 0.0;
 
 /* Do a Lucas-Lehmer iteration */
 
 		start_timer (0);
+
+/* If we are recovering from a big roundoff error, then run one */
+/* iteration using three multiplies where half the data is zeroed. */
+/* This won't run into any roundoff problems and will protect from */
+/* roundoff errors up to 0.6. */
+
+		if (maxerr_recovery_mode && counter == last_counter) {
+			careful_iteration (LLDATA, &units_bit);
+			maxerr_recovery_mode = 0;
+			echk = 0;
+		}
+
+/* Otherwise, do a normal iteration */
+
 #ifndef SERVER_TESTING
-		gwsetnormroutine (0, echk, 0);
-		gwstartnextfft (!stopping && !saving && !(counter+1 == p) &&
-				!(interimResidues && (counter+1) % interimResidues <= 2));
-		lucas_fixup (&units_bit);
+		else {
+			gwsetnormroutine (0, echk, 0);
+			gwstartnextfft (!stopping && !saving &&
+					!maxerr_recovery_mode &&
+					counter+1 != p &&
+					(interimResidues == 0 ||
+					 (counter+1) % interimResidues > 2));
+			lucas_fixup (&units_bit);
 //gwnum qw = gwalloc ();
 //gwfft (LLDATA, qw);
 //gwfftfftmul (qw, qw, LLDATA);
 //	gwcopy (LLDATA, qw);
 //	gwmul (qw, LLDATA);
 //gwfree(qw);
-		gwsquare (LLDATA);
+			gwsquare (LLDATA);
+		}
 #endif
+
+/* End iteration timing and increase count of iteration completed */
+
 		end_timer (0);
 		iters++;
 
@@ -1569,6 +1936,7 @@ static	unsigned long last_counter = 0;		/* Iteration of last error */
 			sprintf (buf, ERRMSG0, counter, p, ERRMSG1A);
 			OutputBoth (buf);
 			inc_error_count (2, &error_count);
+			sleep5 = 1;
 			goto restart;
 		}
 
@@ -1596,20 +1964,26 @@ static	unsigned long last_counter = 0;		/* Iteration of last error */
 				last_suminp = gwsuminp (LLDATA);
 				last_sumout = gwsumout (LLDATA);
 				inc_error_count (0, &error_count);
+				sleep5 = 1;
 				goto restart;
 			}
 		}
 
-/* Check for excessive roundoff error  */
+/* Check for excessive roundoff error.  If round off is too large, repeat */
+/* the iteration to see if this was a hardware error.  If it was repeatable */
+/* then repeat the iteration using a safer, slower method.  This can */
+/* happen when operating near the limit of an FFT. */
 
-		if (echk && MAXERR > 0.40) {
+		if (echk && MAXERR >= 0.40625) {
 			static double last_maxerr = 0.0;
-			if (MAXERR < 0.48 &&
-			    counter == last_counter &&
-			    MAXERR == last_maxerr) {
+			if (counter == last_counter && MAXERR == last_maxerr) {
 				OutputBoth (ERROK);
 				inc_error_count (3, &error_count);
 				GWERROR = 0;
+				OutputBoth (ERRMSG5);
+				maxerr_recovery_mode = 1;
+				sleep5 = 0;
+				goto restart;
 			} else {
 				char	msg[100];
 				sprintf (msg, ERRMSG1C, MAXERR);
@@ -1618,6 +1992,7 @@ static	unsigned long last_counter = 0;		/* Iteration of last error */
 				last_counter = counter;
 				last_maxerr = MAXERR;
 				inc_error_count (1, &error_count);
+				sleep5 = 0;
 				goto restart;
 			}
 		}
@@ -1721,7 +2096,7 @@ _close (fd);
 		if (interimResidues && counter % interimResidues <= 2) {
 			generateResidue64 (units_bit, &high32, &low32);
 			sprintf (buf, 
-				 "M%ld interim WX%d residue %08lX%08lX at iteration %ld\n",
+				 "M%ld interim WY%d residue %08lX%08lX at iteration %ld\n",
 				 p, PORT, high32, low32, counter);
 			OutputBoth (buf);
 		}
@@ -1770,13 +2145,13 @@ _close (fd);
 /* Format the output message */
 
 	if (isPrime) {
-		sprintf (buf, "M%ld is prime! WX%d: %08lX\n",
+		sprintf (buf, "M%ld is prime! WY%d: %08lX\n",
 			 p, PORT, SEC1 (p));
 		high32 = low32 = 0;
 	} else {
 		generateResidue64 (units_bit, &high32, &low32);
 		sprintf (buf,
-			 "M%ld is not prime. Res64: %08lX%08lX. WX%d: %08lX,%ld,%08lX\n",
+			 "M%ld is not prime. Res64: %08lX%08lX. WY%d: %08lX,%ld,%08lX\n",
 			 p, high32, low32, PORT,
 			 SEC2 (p, high32, low32, units_bit, error_count),
 			 units_bit, error_count);
@@ -1839,7 +2214,7 @@ restart:clearRollingStart ();
 
 /* Output a message saying we are restarting */
 
-	OutputBoth (ERRMSG2);
+	if (sleep5) OutputBoth (ERRMSG2);
 	OutputBoth (ERRMSG3);
 
 /* Update the error count in the save file */
@@ -1848,7 +2223,7 @@ restart:clearRollingStart ();
 
 /* Sleep five minutes before restarting */
 
-	if (! SleepFive ()) return (FALSE);
+	if (sleep5 && ! SleepFive ()) return (FALSE);
 
 /* Return so that last continuation file is read in */
 
@@ -2176,6 +2551,8 @@ static	int	data_index[29] = {0};
 	for (iter = 1; ; iter++) {
 		unsigned long p, reshi, reslo, units_bit;
 		unsigned int ll_iters;
+		long	memory, num_gwnums;
+		gwnum	*gwarray, g;
 
 /* Find next self test data entry to work on */
 
@@ -2213,10 +2590,36 @@ static	int	data_index[29] = {0};
 		lucasSetup (p, fftlen);
 		MAXDIFF *= 2.0;
 
+/* Determine how many gwnums we can allocate in the memory we are given */
+
+		memory = (DAY_MEMORY > NIGHT_MEMORY) ? DAY_MEMORY : NIGHT_MEMORY;
+		if (memory <= 8 || torture_count < 0 || (iter & 1) == 0)
+			num_gwnums = 1;
+		else {
+			memory = memory * 1000000 -
+				 map_fftlen_to_memused (FFTLEN, PLUS1);
+			num_gwnums = memory / gwnum_size (FFTLEN);
+			if (num_gwnums < 1) num_gwnums = 1;
+			if (num_gwnums > (long) ll_iters) num_gwnums = ll_iters;
+		}
+
+/* Allocate gwnums to eat up the available memory */
+
+		gwarray = (gwnum *) malloc (num_gwnums * sizeof (gwnum));
+		gwarray[0] = LLDATA;
+		for (k = 1; k < (unsigned int) num_gwnums; k++) {
+			gwarray[k] = gwalloc ();
+			if (gwarray[k] == NULL) {
+				num_gwnums = k;
+				break;
+			}
+		}
+
 /* Init data area with a pre-determined value */
 
 restart_test:	units_bit = 0;
 		dbltogw (4.0, LLDATA);
+		g = LLDATA;
 
 /* Do Lucas-Lehmer iterations */
 
@@ -2225,12 +2628,21 @@ restart_test:	units_bit = 0;
 			short	type;
 			unsigned long trash;
 
+/* Copy previous squared value (so we plow through memory) */
+
+			if (k && num_gwnums > 1) {
+				gwnum	prev;
+				prev = g;
+				g = gwarray[k % num_gwnums];
+				gwcopy (prev, g);
+			}
+
 /* One Lucas-Lehmer test with error checking */
 
 			gwsetnormroutine (0, 1, 0);
 			gwstartnextfft (k != 100 && k != ll_iters - 1);
 			lucas_fixup (&units_bit);
-			gwsquare (LLDATA);
+			gwsquare (g);
 
 /* If the sum of the output values is an error (such as infinity) */
 /* then raise an error. */
@@ -2247,12 +2659,13 @@ restart_test:	units_bit = 0;
 
 			if (gw_test_mismatched_sums ()) {
 				sprintf (buf, SELFFAIL2,
-					 gwsumout (LLDATA),
-					 gwsuminp (LLDATA));
+					 gwsumout (g),
+					 gwsuminp (g));
 				OutputBoth (buf);
 				OutputBoth (SELFFAIL5);
 				SELF_TEST_ERRORS++;
 				lucasDone ();
+				free (gwarray);
 				return (FALSE);
 			}
 
@@ -2264,6 +2677,7 @@ restart_test:	units_bit = 0;
 				OutputBoth (SELFFAIL5);
 				SELF_TEST_ERRORS++;
 				lucasDone ();
+				free (gwarray);
 				return (FALSE);
 			}
 
@@ -2271,6 +2685,7 @@ restart_test:	units_bit = 0;
 
 			if (escapeCheck ()) {
 				lucasDone ();
+				free (gwarray);
 				return (FALSE);
 			}
 
@@ -2278,10 +2693,12 @@ restart_test:	units_bit = 0;
 
 			if (k != 100) continue;
 			if (--countdown) continue;
+			if (g != LLDATA) gwcopy (g, LLDATA);
 			if (! writeToFile (filename, 0, 0, 0)) {
 				OutputBoth (SELFFAILW);
 				SELF_TEST_ERRORS++;
 				lucasDone ();
+				free (gwarray);
 				return (FALSE);
 			}
 			countdown = 9;
@@ -2291,6 +2708,7 @@ restart_test:	units_bit = 0;
 				OutputBoth (SELFFAILR);
 				SELF_TEST_ERRORS++;
 				lucasDone ();
+				free (gwarray);
 				return (FALSE);
 			}
 			_unlink (filename);
@@ -2298,8 +2716,10 @@ restart_test:	units_bit = 0;
 
 /* Compare final 32 bits with the pre-computed array of correct residues */
 
+		if (g != LLDATA) gwcopy (g, LLDATA);
 		generateResidue64 (units_bit, &reshi, &reslo);
 		lucasDone ();
+		free (gwarray);
 		if (reshi != SELF_TEST_DATA[i].reshi) {
 			sprintf (buf, SELFFAIL, reshi, SELF_TEST_DATA[i].reshi);
 			OutputBoth (buf);
@@ -2336,15 +2756,23 @@ restart_test:	units_bit = 0;
 /* Read a file of exponents to run LL iterations on as part of a QA process */
 /* The format of this file is: */
 /*	exponent,optional fft length,num iters,optional shift count,residue */
+/* An Advanced/Time 9999 corresponds to type 0, Advanced/Time 9998 */
+/* corresponds to type 1, etc. */
+/* Type 0 executes much like an LL test, error checking and doing a */
+/* careful iteration occasionally */
+/* Type 1 does roundoff checking every iteration and accumulates */
+/* statistics on the round off data. */
+/* Type 2 and higher have not been used much and may not work */
 
 int lucas_QA (
 	int	type)
 {
 	FILE	*fd;
 
-/* Set the title */
+/* Set the title, init random generator */
 
 	title ("QA");
+	srand ((unsigned) time (NULL));
 
 /* Open QA file */
 
@@ -2360,9 +2788,9 @@ int lucas_QA (
 		unsigned long p, fftlen, iters, units_bit;
 		char	buf[500], res[80];
 		unsigned long reshi, reslo;
-		unsigned long i, word, bit_in_word;
+		unsigned long i, word, bit_in_word, maxerrcnt, loops;
 		double	maxsumdiff, maxerr, toterr, M, S;
-/*		unsigned long bins[501]; */
+		unsigned long ge_300, ge_325, ge_350, ge_375, ge_400;
 		gwnum	t1, t2;
 		unsigned int iters_unchecked;
 
@@ -2373,19 +2801,25 @@ int lucas_QA (
 			&p, &fftlen, &iters, &units_bit, &res);
 		if (p == 0) break;
 
+/* In a type 4 run, we decrement through exponents to find any with */
+/* anamolously high average errors.  After selecting a tentative FFT */
+/* crossover, we do a type 4 run looking for a higher average error */
+/* below the crossover we selected. */
+
+		for (loops = (type != 4 ? 1 : units_bit % 100); loops--; p-=2){
+
 /* Now run Lucas setup */
 
 		lucasSetup (p, fftlen);
 		maxsumdiff = 0.0;
-		maxerr = 0.0; toterr = 0.0;
-/*		memset (bins, 0, sizeof (bins)); */
-		iters_unchecked = (type >= 2) ? 12 : (type >= 1) ? 5 : 40;
+		ge_300 = ge_325 = ge_350 = ge_375 = ge_400 = 0;
+		maxerr = 0.0; maxerrcnt = 0; toterr = 0.0;
+		iters_unchecked = (type > 3) ? 2 : 40;
 
 /* Check for a randomized units bit */
 
 		if (units_bit >= p) {
 			unsigned long hi, lo;
-			srand ((unsigned) time (NULL));
 			units_bit = (rand () << 16) + rand ();
 			if (CPU_FLAGS & CPU_RDTSC) { rdtsc (&hi,&lo); units_bit += lo; }
 			units_bit = units_bit % p;
@@ -2398,13 +2832,14 @@ int lucas_QA (
 		bitaddr ((units_bit + 2) % p, &word, &bit_in_word);
 		for (i = 0; i < FFTLEN; i++) {
 			set_fft_value (LLDATA, i,
-				       (type == 3) ? i % 97 :
+				       (type == 3 || type == 4) ?
+					 (rand () & 1) ? rand () : -rand () :
 				       (i == word) ? (1L << bit_in_word) : 0);
 		}
 
 /* The thorough, P-1, and ECM tests use more than one number */
 
-		if (type >= 2) {
+		if (type == 2 || type == 3) {
 			t1 = gwalloc ();
 			dbltogw (234872639921.0, t1);
 			gwfft (t1, t1);
@@ -2420,9 +2855,18 @@ int lucas_QA (
 
 /* One Lucas-Lehmer iteration with error checking */
 
-			gwsetnormroutine (0, ERRCHK || (i & 127) == 64, 0);
-			gwstartnextfft (i < iters / 2);
-			if (type <= 1) {		/* Typical LL test */
+			if (type == 0) {		/* Typical LL test */
+				gwsetnormroutine (0, (i & 63) == 37, 0);
+				gwstartnextfft (i < iters / 2);
+				if (i > iters / 2 && (i & 63) == 44)
+					careful_iteration (LLDATA, &units_bit);
+				else {
+					lucas_fixup (&units_bit);
+					gwsquare (LLDATA);
+				}
+			} else if (type == 1 || type == 4) { /* Gather stats */
+				gwsetnormroutine (0, 1, 0);
+				gwstartnextfft (i < iters / 2);
 				lucas_fixup (&units_bit);
 				gwsquare (LLDATA);
 			} else if (type == 2) {		/* Thorough test */
@@ -2461,8 +2905,7 @@ int lucas_QA (
 
 /* Keep track of the standard deviation - see Knuth vol 2 */
 
-			if ((type == 1 || type == 3) && i > iters_unchecked) {
-/*				bins[(int)(MAXERR*1000.0+0.5)]++; */
+			if (i > iters_unchecked) {
 				toterr += MAXERR;
 				if (i == iters_unchecked + 1) {
 					M = MAXERR;
@@ -2476,9 +2919,18 @@ int lucas_QA (
 				}
 			}
 
+/* Maintain range info */
+
+			if (MAXERR >= 0.300) ge_300++;
+			if (MAXERR >= 0.325) ge_325++;
+			if (MAXERR >= 0.350) ge_350++;
+			if (MAXERR >= 0.375) ge_375++;
+			if (MAXERR >= 0.400) ge_400++;
+
 /* Maintain maximum error info */
 
-			if (MAXERR > maxerr) maxerr = MAXERR;
+			if (MAXERR > maxerr) maxerr = MAXERR, maxerrcnt = 1;
+			else if (MAXERR == maxerr) maxerrcnt++;
 			MAXERR = 0.0;
 
 /* Maintain maximum suminp/sumout difference */
@@ -2542,31 +2994,30 @@ int lucas_QA (
 
 /* Output array of distributions of MAXERR */
 
-		if (type == 1 || type == 3) {
+		if (type == 1 || type == 3 || type == 4) {
 			S = sqrt (S / (iters - iters_unchecked - 1));
 			toterr /= iters - iters_unchecked;
 			sprintf (buf, "avg: %6.6f, stddev: %6.6f, #stdev to 0.5: %6.6f\n",
 				 toterr, S, (0.50 - toterr) / S);
 			OutputBoth (buf);
-/*			for (i = 0; i < 501; i++) {
-				sprintf (buf, "%lu,%lu\n", i, bins[i]);
-				OutputBoth (buf);
-			} */
 		}
 
 /* Compare residue with correct residue from the input file */
 
 		sprintf (buf, "%08X%08X", reshi, reslo);
-		if (stricmp (res, buf)) {
+		if (type <= 2 && stricmp (res, buf)) {
 			sprintf (buf, "Warning: Residue mismatch. Expected %s\n", res);
 			OutputBoth (buf);
 		}
 
 /* Output message */
 
-		sprintf (buf, "Exp/iters: %lu/%lu, res: %08X%08X, maxerr: %6.6f, maxdiff: %9.9f/%9.9f\n",
-			 p, iters, reshi, reslo, maxerr, maxsumdiff, MAXDIFF);
+		sprintf (buf, "Exp/iters: %lu/%lu, res: %08X%08X, maxerr: %6.6f/%lu, %lu/%lu/%lu/%lu/%lu, maxdiff: %9.9f/%9.9f\n",
+			 p, iters, reshi, reslo, maxerr, maxerrcnt,
+			 ge_300, ge_325, ge_350, ge_375, ge_400,
+			 maxsumdiff, MAXDIFF);
 		OutputBoth (buf);
+		}
 	}
 	fclose (fd);
 
@@ -2581,7 +3032,7 @@ void generateRandomData (void)
 
 /* Fill data space with random values. */
 
-	srand ((unsigned int) PARG);
+	srand ((unsigned) time (NULL));
 	for (i = 0; i < FFTLEN; i++) {
 		set_fft_value (LLDATA, i, rand() & 0xFF);
 	}
@@ -2685,7 +3136,7 @@ void primeTime (
 }
 
 #define BENCH1 "\nYour timings will be written to the results.txt file.\n"
-#define BENCH2 "Compare your results to other computers at http:\\www.mersenne.org\\bench.htm\n"
+#define BENCH2 "Compare your results to other computers at http://www.mersenne.org/bench.htm\n"
 #define BENCH3 "That web page also contains instructions on how your results can be included.\n\n"
 
 /* Time a few iterations of many FFT lengths */
@@ -2694,8 +3145,8 @@ void primeBench (void)
 {
 	unsigned long i, j, iterations;
 	double	best_time;
-	char	buf[80];
-	int	fft_lengths[12] = {256, 320, 384, 448, 512, 640, 768, 892, 1024, 1280, 1536, 1792};
+	char	buf[512];
+	int	fft_lengths[12] = {256, 320, 384, 448, 512, 640, 768, 896, 1024, 1280, 1536, 1792};
 
 /* Set the process/thread priority */
 
@@ -2707,16 +3158,24 @@ void primeBench (void)
 	OutputBoth (BENCH2);
 	OutputBoth (BENCH3);
 
+/* Output to the results file a full CPU description */
+
+	getCpuDescription (buf, 1);
+	writeResults (buf);
+	sprintf (buf, "Prime95 version %s, RdtscTiming=%d\n",
+		 VERSION, RDTSC_TIMING);
+	writeResults (buf);
+
 /* Loop over all 12 FFT lengths */
 
 	for (i = 0; i < 12; i++) {
 
-/* Initialize for this FFT length.  Compute the number of iterations to time. */
-/* This is based on the fact that it doesn't take too long for my 1400 MHz P4 */
-/* to run 10 iterations of a 1792K FFT. */
+/* Initialize for this FFT length.  Compute the number of iterations to */
+/* time.  This is based on the fact that it doesn't take too long for */
+/* my 1400 MHz P4 to run 10 iterations of a 1792K FFT. */
 
 		lucasSetup (5000000, fft_lengths[i] * 1024);
-		iterations = 10 * 1792 * CPU_SPEED / 1400 / fft_lengths[i];
+		iterations = (unsigned long) (10 * 1792 * CPU_SPEED / 1400 / fft_lengths[i]);
 		if (iterations < 10) iterations = 10;
 
 /* Output start message for this FFT length */
@@ -2812,11 +3271,9 @@ loop:	res = factor64 ();
 
 	OutputBoth ("ERROR: Incorrect factor found.\n");
 	if (! SleepFive ()) return (FALSE);
-	FACLSW = p;
-	SRCARG = FACDATA;
-	setupf ();
 	FACHSW = hsw;
 	FACMSW = msw;
+	factorSetup (p);
 	goto loop;
 }
 
@@ -2879,7 +3336,7 @@ int primeFactor (
 
 /* Determine how much we should factor (in bits) */
 
-	test_bits = factorLimit (p, work_type == WORK_FACTOR);
+	test_bits = factorLimit (p, work_type);
 	if (test_bits < 32) test_bits = 32;
 
 /* By default we do not do the old style of factoring which was 16 passes */
@@ -2953,10 +3410,6 @@ int primeFactor (
 		 fd ? "Resuming" : "Starting", p, test_bits);
 	OutputStr (buf);
 
-/* Load the factoring code */
-
-	factorSetup ();
-
 /* Loop testing larger and larger factors until we've tested to the */
 /* appropriate number of bits.  Advance one bit at a time to minimize wasted */
 /* time looking for a second factor after a first factor is found. */
@@ -2964,7 +3417,7 @@ int primeFactor (
 	while (test_bits > bits) {
 	    unsigned int end_bits;
 	    unsigned long iters, iters_r;
-	    int	stopping = 0;
+	    int	stopping, saving;
 
 /* Advance one bit at a time to minimize wasted time looking for a */
 /* second factor after a first factor is found. */
@@ -3027,9 +3480,7 @@ int primeFactor (
 /* Setup the factoring program */
 
 		FACPASS = pass;
-		FACLSW = p;
-		SRCARG = FACDATA;
-		setupf ();
+		factorSetup (p);
 
 /* Loop until all factors tested or factor found */
 
@@ -3068,14 +3519,16 @@ int primeFactor (
 #endif
 
 /* Send queued messages to the server every so often */
+/* Set flag if we are saving or stopping */
 
-			if ((iters_r & 0x7F) == 0) {
+			stopping = stopCheck ();
+			if ((iters_r & 0x7F) == 0 && !stopping) {
 				if (!communicateWithServer ()) stopping = 1;
-			}
-
-/* Set flag if we are stopping */
-
-			stopping |= stopCheck ();
+				if (!pauseWhileRunning ()) stopping = 1;
+				time (&current_time);
+				saving = (current_time-start_time > write_time);
+			} else
+				saving = 0;
 
 /* Output informative message */
 
@@ -3119,8 +3572,7 @@ int primeFactor (
 
 /* If an escape key was hit, write out the results and return */
 
-			time (&current_time);
-			if (stopping || current_time-start_time > write_time) {
+			if (stopping || saving) {
 				short	shortdummy;
 				long	longdummy;
 				fd = _creat (filename, 0666);
@@ -3194,11 +3646,9 @@ int primeFactor (
 			endptlo = 0;
 		}
 
-/* Every so often, set flag to see if we have enough work queued up */
-/* Also, update the percent complete */
+/* Do next of the 16 passes */
 
-nextpass:	ConditionallyUpdateEndDates ();
-		CHECK_WORK_QUEUE = 1;
+nextpass:	;
 	    }
 
 /* If we've found a factor, then we are done factoring */
@@ -3227,7 +3677,7 @@ done:	if (*result)
 		pkt.resultInfo.how_far_factored = bits;
 		spoolMessage (PRIMENET_ASSIGNMENT_RESULT, &pkt);
 
-		sprintf (buf, "M%ld no factor to 2^%d, WX%d: %08lX\n",
+		sprintf (buf, "M%ld no factor to 2^%d, WY%d: %08lX\n",
 			 p, bits, PORT, SEC3 (p));
 		OutputBoth (buf);
 		spoolMessage (PRIMENET_RESULT_MESSAGE, buf);
@@ -3263,7 +3713,7 @@ readerr:_close (fd);
 
 /* Factor a range of primes using factors of the specified size */
 
-char NOFAC[] = "M%ld no factor from 2^%d to 2^%d, WX%d: %08lX\n";
+char NOFAC[] = "M%ld no factor from 2^%d to 2^%d, WY%d: %08lX\n";
 
 int primeSieve (
 	unsigned long startp,
@@ -3276,8 +3726,9 @@ int primeSieve (
 	char	filename[20], buf[80], str[80];
 	int	increasing, continuation;
 	unsigned long p, endpthi, endptlo, iters, iters_r;
-	short	pass, found_factor;
-	int	stopping = 0;
+	unsigned short bits;
+	short	pass;
+	int	stopping, saving;
 	time_t	start_time, current_time;
 
 /* Clear all timers */
@@ -3303,21 +3754,11 @@ int primeSieve (
 /* Is this a continuation?  If so, read continuation file. */
 
 	if (fd) {
-		short	oldfromfile;
-		_read (fd, &startp, sizeof (long));
-		_read (fd, &endp, sizeof (long));
-		_read (fd, &minbits, sizeof (short));
-		_read (fd, &maxbits, sizeof (short));
-		_read (fd, &oldfromfile, sizeof (short));
 		_read (fd, &p, sizeof (long));
-		_read (fd, &FACMSW, sizeof (long));
 		_read (fd, &pass, sizeof (short));
-		_read (fd, &endptlo, sizeof (long));
-		_read (fd, &found_factor, sizeof (short));
-		FACHSW = 0;
+		_read (fd, &bits, sizeof (short));
 		_read (fd, &FACHSW, sizeof (long));
-		endpthi = 0;
-		_read (fd, &endpthi, sizeof (long));
+		_read (fd, &FACMSW, sizeof (long));
 		_close (fd);
 		continuation = TRUE;
 	} else
@@ -3326,10 +3767,6 @@ int primeSieve (
 /* Init filename */
 
 	tempFileName (filename, 0);
-
-/* Load the factoring code */
-
-	factorSetup ();
 
 /* Loop until all the entire range is factored */
 
@@ -3350,46 +3787,45 @@ int primeSieve (
 
 		if (!isPrime (p)) goto nextp;
 
+/* Loop through all the bit levels */
+
+		if (!continuation) bits = minbits;
+		for ( ; bits <= maxbits; bits++) {
+
 /* Determine how much we should factor */
 
-		if (!continuation) {
-			if (maxbits < 64) {
-				endpthi = 0;
-				endptlo = 1L << (maxbits-32);
-			} else {
-				endpthi = 1L << (maxbits-64);
-				endptlo = 0;
-			}
+		if (bits < 64) {
+			endpthi = 0;
+			endptlo = 1L << (bits-32);
+		} else {
+			endpthi = 1L << (bits-64);
+			endptlo = 0;
 		}
 
 /* Sixteen passes! two for the 1 or 7 mod 8 factors times two for the */
 /* 1 or 2 mod 3 factors times four for the 1, 2, 3, or 4 mod 5 factors. */
 
-		if (!continuation) {
-			pass = 1;
-			found_factor = FALSE;
-		}
-		for ( ; pass <= 16; pass++) {
+		if (!continuation) pass = 0;
+		for ( ; pass < 16; pass++) {
 
 /* Setup the factoring program */
 
 		if (!continuation) {
-			if (minbits <= 32) {
+			if (bits <= 32) {
 				FACHSW = 0;
 				FACMSW = 0;
-			} else if (minbits <= 64) {
+			} else if (bits <= 64) {
 				FACHSW = 0;
-				FACMSW = 1L << (minbits-33);
+				FACMSW = 1L << (bits-33);
 			} else {
-				FACHSW = 1L << (minbits-65);
+				FACHSW = 1L << (bits-65);
 				FACMSW = 0;
 			}
-			if (pass > 1 && FACMSW == 0) FACMSW = 1;
+			if (pass > 0 && FACMSW == 0) FACMSW = 1;
 		}
-		FACPASS = pass-1;
-		FACLSW = p;
-		SRCARG = FACDATA;
-		setupf ();
+		FACPASS = pass;
+		factorSetup (p);
+		continuation = FALSE;
 
 /* Loop until all factors tested or factor found */
 
@@ -3402,34 +3838,36 @@ int primeSieve (
 
 			if (FACHSW > endpthi ||
 			    (FACHSW == endpthi && FACMSW >= endptlo))
-				goto nextpass;
+				break;
 
 /* Factor some more */
 
 			start_timer (0);
 			res = factorAndVerify (p);
 			end_timer (0);
-			if (res != 2) break;
+			if (res != 2) goto bingo;
 
 /* Send queued messages to the server every so often */
+/* Set flag if we are saving or stopping */
 
-			if ((iters & 0x7F) == 0) {
+			stopping = stopCheck ();
+			if ((iters_r & 0x7F) == 0 && !stopping) {
 				if (!communicateWithServer ()) stopping = 1;
-			}
-
-/* Set flag if we are stopping */
-
-			stopping |= stopCheck ();
+				if (!pauseWhileRunning ()) stopping = 1;
+				time (&current_time);
+				saving = (current_time-start_time > write_time);
+			} else
+				saving = 0;
 
 /* Output informative message */
 
 			if (++iters >= ITER_OUTPUT) {
 				char	fmt_mask[80];
 				double	percent;
-				percent = facpct ((short) (pass-1), minbits-1, endpthi, endptlo);
+				percent = facpct (pass, bits-1, endpthi, endptlo);
 				percent = trunc_percent (percent);
 				sprintf (fmt_mask, FACMSG, PRECISION);
-				sprintf (buf, fmt_mask, p, maxbits, percent);
+				sprintf (buf, fmt_mask, p, bits, percent);
 				OutputTimeStamp ();
 				OutputStr (buf);
 				OutputStr ("  Time: ");
@@ -3445,10 +3883,10 @@ int primeSieve (
 			if (++iters_r >= ITER_OUTPUT_RES) {
 				char	fmt_mask[80];
 				double	percent;
-				percent = facpct ((short) (pass-1), minbits-1, endpthi, endptlo);
+				percent = facpct (pass, bits-1, endpthi, endptlo);
 				percent = trunc_percent (percent);
 				sprintf (fmt_mask, FACMSG, PRECISION);
-				sprintf (buf, fmt_mask, p, maxbits, percent);
+				sprintf (buf, fmt_mask, p, bits, percent);
 				strcat (buf, "\n");
 				writeResults (buf);
 				iters_r = 0;
@@ -3456,24 +3894,16 @@ int primeSieve (
 
 /* If an escape key was hit, write out the results and return */
 
-			time (&current_time);
-			if (stopping || current_time-start_time > write_time) {
-				short	three = 3;
+			if (stopping || saving) {
+				short	four = 4;
 				fd = _open (filename, _O_BINARY | _O_WRONLY | _O_TRUNC | _O_CREAT, 0666);
-				_write (fd, &three, sizeof (short));
+				_write (fd, &four, sizeof (short));
 				_write (fd, &p, sizeof (long)); /* dummy */
-				_write (fd, &startp, sizeof (long));
-				_write (fd, &endp, sizeof (long));
-				_write (fd, &minbits, sizeof (short));
-				_write (fd, &maxbits, sizeof (short));
-				_write (fd, &three, sizeof (short));
 				_write (fd, &p, sizeof (long));
-				_write (fd, &FACMSW, sizeof (long));
 				_write (fd, &pass, sizeof (short));
-				_write (fd, &endptlo, sizeof (long));
-				_write (fd, &found_factor, sizeof (short));
+				_write (fd, &bits, sizeof (short));
 				_write (fd, &FACHSW, sizeof (long));
-				_write (fd, &endpthi, sizeof (long));
+				_write (fd, &FACMSW, sizeof (long));
 				_commit (fd);
 				_close (fd);
 				if (stopping) {
@@ -3484,12 +3914,28 @@ int primeSieve (
 			}
 		}
 
-/* Format the output message */
+/* Next pass */
 
-		makestr (FACHSW, FACMSW, FACLSW, str);
+		if (FACMSW != 0xFFFFFFFF) {
+			endpthi = FACHSW;
+			endptlo = FACMSW+1;
+		} else {
+			endpthi = FACHSW+1;
+			endptlo = 0;
+		}
+		}
+		}
 
-/* Output results */
+/* Output message if no factor found */
 
+		sprintf (buf, NOFAC, p, minbits-1, maxbits, PORT, SEC4 (p));
+		OutputBoth (buf);
+		spoolMessage (PRIMENET_RESULT_MESSAGE, buf);
+		goto nextp;
+
+/* Format and output the factor found message */
+
+bingo:		makestr (FACHSW, FACMSW, FACLSW, str);
 		{
 			struct primenetAssignmentResult pkt;
 			memset (&pkt, 0, sizeof (pkt));
@@ -3502,30 +3948,9 @@ int primeSieve (
 		OutputBoth (buf);
 		spoolMessage (PRIMENET_RESULT_MESSAGE, buf);
 
-/* Next pass */
-
-		if (FACMSW != 0xFFFFFFFF) {
-			endpthi = FACHSW;
-			endptlo = FACMSW+1;
-		} else {
-			endpthi = FACHSW+1;
-			endptlo = 0;
-		}
-		found_factor = TRUE;
-nextpass:	continuation = FALSE;
-		}
-
-/* Output message if no factor found */
-
-		if (! found_factor) {
-			sprintf (buf, NOFAC, p, minbits-1, maxbits, PORT, SEC4 (p));
-			OutputBoth (buf);
-			spoolMessage (PRIMENET_RESULT_MESSAGE, buf);
-		}
-
 /* Factor next prime */
 
-nextp:		continuation = FALSE;
+nextp:		;
 	}
 
 /* Delete the continuation file */
@@ -3550,10 +3975,6 @@ void primeSieveTest (void)
 	char	buf[500];
 	FILE	*fd;
 	unsigned long p;
-
-/* Load the factoring code */
-
-	factorSetup ();
 
 /* Open factors file */
 
@@ -3582,8 +4003,9 @@ void primeSieveTest (void)
 			muladdhlp (facmid, 10);
 			facmid = RES;
 			fachi = fachi * 10 + CARRYL;
-			if (fachi >= 4096) {
-				sprintf (buf, "%s factor too big.\n", fac);
+			if (fachi >= 4194304 ||
+			    (fachi >= 4096 && !(CPU_FLAGS & CPU_SSE2))) {
+				sprintf (buf, "%ld%s factor too big.\n", p, fac);
 				OutputBoth (buf);
 				goto nextp;
 			}
@@ -3619,9 +4041,7 @@ void primeSieveTest (void)
 		else goto bad;
 		FACHSW = fachi;
 		FACMSW = facmid;
-		FACLSW = p;
-		SRCARG = FACDATA;
-		setupf ();
+		factorSetup (p);
 
 /* Factor found, is it a match? */
 
@@ -3630,7 +4050,7 @@ void primeSieveTest (void)
 			    FACHSW == fachi &&
 			    FACMSW == facmid &&
 			    FACLSW == faclo) {
-				sprintf (buf, "%ld factored OK.\n", p);
+				sprintf (buf, "%ld%s factored OK.\n", p, fac);
 				OutputSomewhere (buf);
 				goto nextp;
 			}
@@ -3638,7 +4058,7 @@ void primeSieveTest (void)
 
 /* Uh oh. */
 
-bad:		sprintf (buf, "%ld factor not found.\n", p);
+bad:		sprintf (buf, "%ld%s factor not found.\n", p, fac);
 		OutputBoth (buf);
 
 /* If an escape key was hit, write out the results and return */

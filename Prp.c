@@ -3,13 +3,9 @@
 | all operating systems the program has been ported to.  It is included
 | in one of the source code files of each port.  See common.h for the
 | common #defines and common routine definitions.
-|
-| Commona contains information used only during setup
-| Commonb contains information used only during execution
-| Commonc contains information used during setup and execution
 +---------------------------------------------------------------------*/
 
-char JUNK[]="Copyright 1996-2001 Just For Fun Software, All rights reserved";
+char JUNK[]="Copyright 1996-2002 Just For Fun Software, All rights reserved";
 char	INI_FILE[80] = {0};
 char	RESFILE[80] = {0};
 char	LOGFILE[80] = {0};
@@ -18,9 +14,6 @@ char	EXTENSION[8] = {0};
 int volatile ERRCHK = 0;
 unsigned int PRIORITY = 1;
 unsigned int CPU_AFFINITY = 99;
-EXTERNC unsigned int volatile CPU_TYPE = 0;
-unsigned long volatile CPU_SPEED = 0;
-EXTERNC unsigned int volatile CPU_FLAGS = 0;
 unsigned long volatile ITER_OUTPUT = 0;
 unsigned long volatile ITER_OUTPUT_RES = 99999999;
 unsigned long volatile DISK_WRITE_TIME = 30;
@@ -30,6 +23,7 @@ int	TRAY_ICON = TRUE;
 int	HIDE_ICON = FALSE;
 unsigned int PRECISION = 2;
 int	CUMULATIVE_TIMING = 0;
+int	HIGH_RES_TIMER = 0;
 
 int isPRP (char	*, unsigned long, int *);
 
@@ -111,17 +105,25 @@ void clear_timer (
 void start_timer (
 	int	i)
 {
-	struct _timeb timeval;
-	_ftime (&timeval);
-	timers[i] -= (double) timeval.time * 1000.0 + timeval.millitm;
+	if (HIGH_RES_TIMER) {
+		timers[i] -= getHighResTimer ();
+	} else {
+		struct _timeb timeval;
+		_ftime (&timeval);
+		timers[i] -= (double) timeval.time * 1000.0 + timeval.millitm;
+	}
 }
 
 void end_timer (
 	int	i)
 {
-	struct _timeb timeval;
-	_ftime (&timeval);
-	timers[i] += (double) timeval.time * 1000.0 + timeval.millitm;
+	if (HIGH_RES_TIMER) {
+		timers[i] += getHighResTimer ();
+	} else {
+		struct _timeb timeval;
+		_ftime (&timeval);
+		timers[i] += (double) timeval.time * 1000.0 + timeval.millitm;
+	}
 }
 
 void divide_timer (
@@ -134,7 +136,10 @@ void divide_timer (
 double timer_value (
 	int	i)
 {
-	return (timers[i] / 1000.0);
+	if (HIGH_RES_TIMER)
+		return (timers[i] / getHighResTimerFrequency ());
+	else
+		return (timers[i] / 1000.0);
 }
 
 #define TIMER_NL	0x1
@@ -146,173 +151,121 @@ void print_timer (
 	int	flags)
 {
 	char	buf[40];
+	double	t;
 
-	sprintf (buf, "%.3f sec.", timer_value (i));
+	t = timer_value (i);
+	if (t >= 1.0)
+		sprintf (buf, "%.3f sec.", t);
+	else
+		sprintf (buf, "%.3f ms.", t * 1000.0);
 	OutputStr (buf);
 	if (flags & TIMER_NL) LineFeed ();
 	if (flags & TIMER_CLR) timers[i] = 0.0;
 	if ((flags & TIMER_OPT_CLR) && !CUMULATIVE_TIMING) timers[i] = 0.0;
 }
 
-/* Try pentium-specific instruction (RDTSC) */
-/* Try pentium pro-specific instruction (CMOV) */
-/* Try pentium III-specific instruction (ORPS) */
-/* Try pentium 4-specific instruction (ADDPD) */
+/* Determine the CPU speed either empirically or by user overrides. */
+/* getCpuType must be called prior to calling this routine. */
 
-#if defined (__linux__) || defined (__FreeBSD__) || defined (__EMX__)
+void getCpuSpeed (void)
+{
+	int	temp;
 
-#include <setjmp.h>
-int	boom;
-jmp_buf	env;
-void sigboom_handler(int i)
-{
-	boom = TRUE;
-	longjmp (env, 1);
-}
-int isPentium ()
-{
-	boom = FALSE;
-	(void) signal (SIGILL, sigboom_handler);
-	if (setjmp (env) == 0)
-		__asm__ __volatile__ (".byte 0x0F\n .byte 0x31\n");
-	(void) signal (SIGILL, SIG_DFL);
-	return (!boom);
-}
-int isPentiumPro ()
-{
-	boom = FALSE;
-	(void) signal (SIGILL, sigboom_handler);
-	if (setjmp (env) == 0)
-		__asm__ __volatile__ (".byte 0x0F\n .byte 0x42\n .byte 0xC0\n");
-	(void) signal (SIGILL, SIG_DFL);
-	return (!boom);
-}
-int isPentiumMMX ()			/* Supports prefetcht1 MMX inst. */
-{
-	boom = FALSE;
-	(void) signal (SIGILL, sigboom_handler);
-	if (setjmp (env) == 0)
-		__asm__ __volatile__ (".byte 0x0F\n .byte 0x18\n .byte 0x16\n");
-	(void) signal (SIGILL, SIG_DFL);
-	return (!boom);
-}
-int isPentium3 ()
-{
-	boom = FALSE;
-	(void) signal (SIGILL, sigboom_handler);
-	if (setjmp (env) == 0)
-		__asm__ __volatile__ (".byte 0x0F\n .byte 0x56\n .byte 0xC0\n");
-	(void) signal (SIGILL, SIG_DFL);
-	return (!boom);
-}
-int isPentium4 ()
-{
-	boom = FALSE;
-	(void) signal (SIGILL, sigboom_handler);
-	if (setjmp (env) == 0)
-		__asm__ __volatile__ (".byte 0x66\n .byte 0x0F\n .byte 0x58\n .byte 0xC0\n");
-	(void) signal (SIGILL, SIG_DFL);
-	return (!boom);
+/* Guess the CPU speed using the RDTSC instruction */
+
+	guessCpuSpeed ();
+
+/* Now let the user override the cpu speed from the local.ini file */
+
+	if (IniGetInt (INI_FILE, "CpuOverride", 0)) {
+		temp = IniGetInt (INI_FILE, "CpuSpeed", 99);
+		if (temp != 99) CPU_SPEED = temp;
+	}
+
+/* Make sure the cpu speed is reasonable */
+
+	if (CPU_SPEED > 50000) CPU_SPEED = 50000;
+	if (CPU_SPEED < 25) CPU_SPEED = 25;
 }
 
-#else
+/* Set the CPU flags based on the CPUID data.  Also, the */
+/* advanced user can override our guesses. */
 
-int isPentium ()
+void getCpuInfo (void)
 {
-	int	rdtsc_succeeded;
-	__try {
-		__asm __emit 0x0F
-		__asm __emit 0x31
-		rdtsc_succeeded = TRUE;
-	}
-	__except (EXCEPTION_EXECUTE_HANDLER) {
-		rdtsc_succeeded = FALSE;
-	}
-	return (rdtsc_succeeded);
-}
-int isPentiumPro ()
-{
-	int	cmov_succeeded;
-	__try {
-		__asm __emit 0x0F
-		__asm __emit 0x42
-		__asm __emit 0xC0
-		cmov_succeeded = TRUE;
-	}
-	__except (EXCEPTION_EXECUTE_HANDLER) {
-		cmov_succeeded = FALSE;
-	}
-	return (cmov_succeeded);
-}
-int isPentiumMMX ()			/* Supports prefetcht1 MMX inst. */
-{
-	int	prefetch_succeeded;
-	__try {
-		__asm __emit 0x0F
-		__asm __emit 0x18
-		__asm __emit 0x16
-		prefetch_succeeded = TRUE;
-	}
-	__except (EXCEPTION_EXECUTE_HANDLER) {
-		prefetch_succeeded = FALSE;
-	}
-	return (prefetch_succeeded);
-}
-int isPentium3 ()
-{
-	int	orps_succeeded;
-	__try {
-		__asm __emit 0x0F
-		__asm __emit 0x56
-		__asm __emit 0xC0
-		orps_succeeded = TRUE;
-	}
-	__except (EXCEPTION_EXECUTE_HANDLER) {
-		orps_succeeded = FALSE;
-	}
-	return (orps_succeeded);
-}
-int isPentium4 ()
-{
-	int	addpd_succeeded;
-	__try {
-		__asm __emit 0x66
-		__asm __emit 0x0F
-		__asm __emit 0x58
-		__asm __emit 0xC0
-		addpd_succeeded = TRUE;
-	}
-	__except (EXCEPTION_EXECUTE_HANDLER) {
-		addpd_succeeded = FALSE;
-	}
-	return (addpd_succeeded);
+	int	temp;
+
+/* Get the CPU info using CPUID instruction */
+
+	guessCpuType ();
+
+/* Let the user override the cpu flags from the local.ini file */
+
+	temp = IniGetInt (INI_FILE, "CpuSupportsRDTSC", 99);
+	if (temp == 0) CPU_FLAGS &= ~CPU_RDTSC;
+	if (temp == 1) CPU_FLAGS |= CPU_RDTSC;
+	temp = IniGetInt (INI_FILE, "CpuSupportsCMOV", 99);
+	if (temp == 0) CPU_FLAGS &= ~CPU_CMOV;
+	if (temp == 1) CPU_FLAGS |= CPU_CMOV;
+	temp = IniGetInt (INI_FILE, "CpuSupportsPrefetch", 99);
+	if (temp == 0) CPU_FLAGS &= ~CPU_PREFETCH;
+	if (temp == 1) CPU_FLAGS |= CPU_PREFETCH;
+	temp = IniGetInt (INI_FILE, "CpuSupportsSSE", 99);
+	if (temp == 0) CPU_FLAGS &= ~CPU_SSE;
+	if (temp == 1) CPU_FLAGS |= CPU_SSE;
+	temp = IniGetInt (INI_FILE, "CpuSupportsSSE2", 99);
+	if (temp == 0) CPU_FLAGS &= ~CPU_SSE2;
+	if (temp == 1) CPU_FLAGS |= CPU_SSE2;
+
+/* Now get the CPU speed */
+
+	getCpuSpeed ();
 }
 
-#endif
+/* Format a long or very long textual cpu description */
 
-
-/* Set the CPU flags based on the user supplied CPU type and the routines */
-/* above.  Also, the advanced user can override our guesses. */
-
-void setCpuFlags ()
+void getCpuDescription (
+	char	*buf,			/* A 512 byte buffer */
+	int	long_desc)		/* True for a very long description */
 {
-	CPU_FLAGS = 0;
-	if (IniGetInt (INI_FILE, "CpuSupportsRDTSC",
-		       CPU_TYPE >= 5 && isPentium ()))
-		CPU_FLAGS |= CPU_RDTSC;
-	if (IniGetInt (INI_FILE, "CpuSupportsCMOV",
-		       (CPU_TYPE == 6 || CPU_TYPE >= 8) && isPentiumPro ()))
-		CPU_FLAGS |= CPU_CMOV;
-	if (IniGetInt (INI_FILE, "CpuSupportsPrefetch",
-		       ((CPU_TYPE == 8 && CPU_SPEED > 533) ||
-			CPU_TYPE >= 10) && isPentiumMMX ()))
-		CPU_FLAGS |= CPU_PREFETCH;
-	if (IniGetInt (INI_FILE, "CpuSupportsSSE",
-		       (CPU_TYPE == 8 || CPU_TYPE >= 10) && isPentium3 ()))
-		CPU_FLAGS |= CPU_SSE;
-	if (IniGetInt (INI_FILE, "CpuSupportsSSE2",
-		       CPU_TYPE >= 12 && isPentium4 ()))
-		CPU_FLAGS |= CPU_SSE2;
+
+/* Recalculate the CPU speed in case speed step has changed the original */
+/* settings. */
+
+	getCpuSpeed ();
+
+/* Now format a pretty CPU description */
+
+	sprintf (buf, "%s\nCPU speed: %.2f MHz\n", CPU_BRAND, CPU_SPEED);
+	if (CPU_FLAGS) {
+		strcat (buf, "CPU features: ");
+		if (CPU_FLAGS & CPU_RDTSC) strcat (buf, "RDTSC, ");
+		if (CPU_FLAGS & CPU_CMOV) strcat (buf, "CMOV, ");
+		if (CPU_FLAGS & CPU_PREFETCH) strcat (buf, "PREFETCH, ");
+		if (CPU_FLAGS & CPU_MMX) strcat (buf, "MMX, ");
+		if (CPU_FLAGS & CPU_SSE) strcat (buf, "SSE, ");
+		if (CPU_FLAGS & CPU_SSE2) strcat (buf, "SSE2, ");
+		strcpy (buf + strlen (buf) - 2, "\n");
+	}
+	strcat (buf, "L1 cache size: ");
+	if (CPU_L1_CACHE_SIZE < 0) strcat (buf, "unknown\n");
+	else sprintf (buf + strlen (buf), "%d KB\n", CPU_L1_CACHE_SIZE);
+	strcat (buf, "L2 cache size: ");
+	if (CPU_L2_CACHE_SIZE < 0) strcat (buf, "unknown\n");
+	else sprintf (buf + strlen (buf), "%d KB\n", CPU_L2_CACHE_SIZE);
+	if (! long_desc) return;
+	strcat (buf, "L1 cache line size: ");
+	if (CPU_L1_CACHE_LINE_SIZE < 0) strcat (buf, "unknown\n");
+	else sprintf (buf+strlen(buf), "%d bytes\n", CPU_L1_CACHE_LINE_SIZE);
+	strcat (buf, "L2 cache line size: ");
+	if (CPU_L2_CACHE_LINE_SIZE < 0) strcat (buf, "unknown\n");
+	else sprintf (buf+strlen(buf), "%d bytes\n", CPU_L2_CACHE_LINE_SIZE);
+	if (CPU_L1_DATA_TLBS > 0)
+		sprintf (buf + strlen (buf), "L1 TLBS: %d\n", CPU_L1_DATA_TLBS);
+	if (CPU_L2_DATA_TLBS > 0)
+		sprintf (buf + strlen (buf), "%sTLBS: %d\n",
+			 CPU_L1_DATA_TLBS > 0 ? "L2 " : "",
+			 CPU_L2_DATA_TLBS);
 }
 
 /* Determine if a number is prime */
@@ -361,12 +314,9 @@ void nameIniFiles (
 
 void readIniFiles ()
 {
-	int	change;
 	int	temp;
 
-	CPU_TYPE = (unsigned int) IniGetInt (INI_FILE, "CPUType", 0);
-	CPU_SPEED = IniGetInt (INI_FILE, "CPUSpeed", 0);
-	setCpuFlags ();
+	getCpuInfo ();
 
 	PRECISION = (unsigned int) IniGetInt (INI_FILE, "PercentPrecision", 2);
 	if (PRECISION > 6) PRECISION = 6;
@@ -389,22 +339,12 @@ void readIniFiles ()
 
 /* Guess the CPU type if it isn't known.  Otherwise, validate it. */
 
-	change = FALSE;
-	if (CPU_TYPE == 0 || CPU_SPEED == 0) guessCpuType (), change = TRUE;
-	if ((CPU_TYPE == 6 || CPU_TYPE == 8 ||
-	     CPU_TYPE == 9 || CPU_TYPE == 10) && !isPentiumPro ())
-		CPU_TYPE = 5, change = TRUE;
-	if (CPU_TYPE >= 5 && !isPentium ()) CPU_TYPE = 4, change = TRUE;
-	if (CPU_SPEED > 10000) CPU_SPEED = 10000, change = TRUE;
-	if (CPU_SPEED < 25) CPU_SPEED = 25, change = TRUE;
-	if (change) {
-		IniWriteInt (INI_FILE, "CPUType", CPU_TYPE);
-		IniWriteInt (INI_FILE, "CPUSpeed", CPU_SPEED);
-	}
+	getCpuInfo ();
 
 /* Other oddball options */
 
 	CUMULATIVE_TIMING = IniGetInt (INI_FILE, "CumulativeTiming", 0);
+	HIGH_RES_TIMER = isHighResTimerAvailable ();
 }
 
 /*----------------------------------------------------------------------
@@ -1213,7 +1153,6 @@ void specialgwtobinary (
 	binarytogw (g, tmp);
 	gwaddquick (gw, tmp);
 	gwtobinary (tmp, g);
-ASSERT (g->sign < N->sign + 3);
 	modg (N, g);
 	gwfree (tmp);
 }
@@ -1399,8 +1338,9 @@ void gen64 (char *str, gwnum x)
 	char	buf[200];
 	tmp = popg ((PARG >> 5) + 3);
 	specialgwtobinary (x, tmp); /* Compensate for possible negative x */
-	sprintf (buf, "%s res64: %08lX%08lX\n", str, tmp->n[0], tmp->n[1]);
+	sprintf (buf, "%s res64: %08lX%08lX\n", str, tmp->n[1], tmp->n[0]);
 	writeResults (buf);
+	pushg (1);
 }
 #endif
 
@@ -1421,7 +1361,7 @@ int isProthPRP (
 	unsigned long bits_per_word;
 	gwnum	x;
 	giant	tmp;
-	char	filename[20], buf[100], str[40];
+	char	filename[20], buf[100], str[40], res64[17];
 	long	write_time = DISK_WRITE_TIME * 60;
 	int	echk, saving, stopping;
 	time_t	start_time, current_time;
@@ -1508,16 +1448,19 @@ restart:
 /* intermediate file (either user-requested stop or a */
 /* 30 minute interval expired), and every 128th iteration. */
 
-		time (&current_time);
-		saving = (current_time - start_time > write_time);
 		stopping = stopCheck ();
-		echk = stopping || saving || ERRCHK || (bit >= len - 50) ||
-		       (bit & 127) == 0;
+		echk = stopping || ERRCHK || (bit >= len - 50);
+		if ((bit & 127) == 0) {
+			echk = 1;
+			time (&current_time);
+			saving = (current_time - start_time > write_time);
+		} else
+			saving = 0;
 
 /* Process this bit */
 
 		if (bitval (N, len-bit-1)) {
-			gwsetnormroutine (0, ERRCHK, 1);
+			gwsetnormroutine (0, echk, 1);
 			gwsquare (x);
 		} else {
 //{giant t1, t2;
@@ -1525,7 +1468,7 @@ restart:
 //t2 = popg ((PARG >> 4) + 3);
 //specialgwtobinary (x, t1);
 //binarytogw (t1, x);
-			gwsetnormroutine (0, ERRCHK, 0);
+			gwsetnormroutine (0, echk, 0);
 			gwsquare (x);
 //squareg (t1);
 //gwtobinary (x, t2);
@@ -1537,7 +1480,9 @@ restart:
 //t1 = popg ((PARG >> 4) + 3);
 //t2 = popg ((PARG >> 4) + 3);
 //gwtobinary (x, t1);
+//			end_timer (0);
 		gwprothmod (x);
+//			start_timer (0);
 //specialgwtobinary (x, t2);
 //modg (N, t1);
 //modg (N, t2);
@@ -1597,8 +1542,7 @@ restart:
 		if (echk && MAXERR > 0.40) {
 			static unsigned long last_bit = 0;
 			static double last_maxerr = 0.0;
-			if (MAXERR < 0.48 &&
-			    bit == last_bit &&
+			if (bit == last_bit &&
 			    MAXERR == last_maxerr) {
 				writeResults (ERROK);
 				saving = 1;
@@ -1682,14 +1626,20 @@ restart:
 	tmp = popg ((PARG >> 5) + 3);
 	specialgwtobinary (x, tmp); /* Compensate for possible negative x */
 	ulsubg (a, tmp);
-	if (!isZero (tmp)) *res = FALSE;	/* Not a prime */
+	if (!isZero (tmp)) {
+		*res = FALSE;	/* Not a prime */
+		sprintf (res64, "%08lX%08lX", tmp->n[1], tmp->n[0]);
+	}
 	pushg (1);
 	gwfree (x);
 
 /* Cleanup */
 
 	end_timer (1);
-	sprintf (buf, "%s is %s prime.\n", str, *res ? "a probable" : "not");
+	if (*res)
+		sprintf (buf, "%s is a probable prime.\n", str);
+	else
+		sprintf (buf, "%s is not prime.  Res64: %s\n", str, res64);
 	if ((*res && IniGetInt (INI_FILE, "OutputPrimes", 1)) ||
 	    (!*res && IniGetInt (INI_FILE, "OutputComposites", 1)))
 		writeResults (buf);
@@ -1738,7 +1688,7 @@ int isPRP (
 	unsigned long bits_per_word;
 	gwnum	x, y, recip, n;
 	giant	tmp;
-	char	filename[20], buf[100];
+	char	filename[20], buf[100], res64[17];
 	long	write_time = DISK_WRITE_TIME * 60;
 	int	echk, saving, stopping;
 	time_t	start_time, current_time;
@@ -1823,7 +1773,7 @@ restart:
 /* Do the PRP test */
 
 	zerowordslow = (len - EB) / bits_per_word;
-	zerowordshigh = fftlen - (len + bits_per_word - 1) / bits_per_word;
+	zerowordshigh = fftlen - len / bits_per_word - 1;
 	gwsetmulbyconst (a);
 	y = gwalloc ();
 	iters = 0;
@@ -1833,31 +1783,33 @@ restart:
 /* intermediate file (either user-requested stop or a */
 /* 30 minute interval expired), and every 128th iteration. */
 
-		time (&current_time);
-		saving = (current_time - start_time > write_time);
 		stopping = stopCheck ();
-		echk = stopping || saving || ERRCHK || (bit >= len - 50) ||
-		       (bit & 127) == 0;
+		echk = stopping || ERRCHK || (bit >= len - 50);
+		if ((bit & 127) == 0) {
+			echk = 1;
+			time (&current_time);
+			saving = (current_time - start_time > write_time);
+		} else
+			saving = 0;
 
 /* Process this bit */
 
 		if (bitval (N, len-bit-1)) {
-			gwsetnormroutine (0, ERRCHK, 1);
+			gwsetnormroutine (0, echk, 1);
 			gwsquare (x);
 		} else {
-			gwsetnormroutine (0, ERRCHK, 0);
+			gwsetnormroutine (0, echk, 0);
 			gwsquare (x);
 		}
 
 		gwcopyzero (x, y, zerowordslow);
-
-		gwsetnormroutine (zerowordshigh, ERRCHK, 0);
+		gwsetnormroutine (zerowordshigh, echk, 0);
 		gwfftmul (recip, y);
 
-		gwsetnormroutine (0, ERRCHK, 0);
+		gwsetnormroutine (0, echk, 0);
 		gwfftmul (n, y);
-
 		gwsub (y, x);
+
 		bit++;
 		iters++;
 #ifdef GTEST
@@ -1996,7 +1948,10 @@ restart:
 	tmp = popg ((PARG >> 5) + 1);
 	specialgwtobinary (x, tmp);
 	ulsubg (a, tmp);
-	if (!isZero (tmp)) *res = FALSE;	/* Not a prime */
+	if (!isZero (tmp)) {
+		*res = FALSE;	/* Not a prime */
+		sprintf (res64, "%08lX%08lX", tmp->n[1], tmp->n[0]);
+	}
 	pushg (1);
 	gwfree (x);
 	gwfree (y);
@@ -2004,7 +1959,10 @@ restart:
 /* Cleanup */
 
 	end_timer (1);
-	sprintf (buf, "%s is %s prime.\n", str, *res ? "a probable" : "not");
+	if (*res)
+		sprintf (buf, "%s is a probable prime.\n", str);
+	else
+		sprintf (buf, "%s is not prime.  Res64: %s\n", str, res64);
 	if ((*res && IniGetInt (INI_FILE, "OutputPrimes", 1)) ||
 	    (!*res && IniGetInt (INI_FILE, "OutputComposites", 1)))
 		writeResults (buf);
@@ -2045,12 +2003,17 @@ int process_num (
 	int	incr,
 	int	*res)
 {
-	if (base == 2) {
+	if (base == 2 && (incr == -1 || incr == +1)) {
 		return (isProthPRP (3, k, n, incr, res));
 	} else {
 		char	buf[100];
 		int	bits, retval;
-		sprintf (buf, "%lu*%lu^%lu%c1", k, base, n, incr < 0 ? '-' : '+');
+		if (k == 1)
+			sprintf (buf, "%lu^%lu%c%lu", base, n,
+				 incr < 0 ? '-' : '+', abs(incr));
+		else
+			sprintf (buf, "%lu*%lu^%lu%c%lu", k, base, n,
+				 incr < 0 ? '-' : '+', abs(incr));
 		bits = (int) ((n * log(base) + log(k)) / log(2));
 		N = newgiant ((bits >> 4) + 8);
 		ultog (base, N);

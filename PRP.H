@@ -1,6 +1,6 @@
 /* Constants */
 
-#define VERSION		"2.0"
+#define VERSION		"2.3"
 
 /* Global variables */
 
@@ -12,16 +12,6 @@ extern char EXTENSION[8];		/* Extension for several filenames */
 extern int volatile ERRCHK;			/* 1 to turn on error checking */
 extern unsigned int PRIORITY;		/* Desired priority level */
 extern unsigned int CPU_AFFINITY;	/* NT Processor affinity */
-EXTERNC unsigned int volatile CPU_TYPE;	/* 3=Cyrix, 4=486, 5=Pentium, */
-					/* 6=Pro, 7=K6, 8=Celeron, 9=P-II */
-					/* 10=P-III, 11=K7, 12=P4 */
-extern unsigned long volatile CPU_SPEED;/* Speed in MHz */
-#define CPU_RDTSC	0x0001
-#define CPU_CMOV	0x0002
-#define CPU_PREFETCH	0x0004
-#define CPU_SSE		0x0008
-#define CPU_SSE2	0x0010
-EXTERNC unsigned int volatile CPU_FLAGS;
 extern unsigned long volatile ITER_OUTPUT;/* Iterations between outputs */
 extern unsigned long volatile ITER_OUTPUT_RES;/* Iterations between results */
 					/* file outputs */
@@ -38,11 +28,7 @@ extern int CUMULATIVE_TIMING;		/* True if outputting cumulative time*/
 
 /* Common routines */
 
-int isPentium ();
-int isPentiumPro ();
-int isPentium3 ();
-int isPentium4 ();
-void setCpuFlags ();
+void getCpuInfo ();
 
 int isPrime (unsigned long p);
 
@@ -73,7 +59,7 @@ void IniDeleteAllLines (char *);
 void OutputBoth (char *);
 void OutputSomewhere (char *);
 void LogMsg (char *);
-void ReplacableLine (int);
+void ReplaceableLine (int);
 
 unsigned long pick_fft_length (unsigned long);
 
@@ -87,11 +73,15 @@ int communicateWithServer ();
 /* Routines called by common routines */
 
 void OutputStr (char *);
-void guessCpuType ();
-unsigned long num_cpus ();
-void doMiscTasks ();
+int isHighResTimerAvailable (void);
+double getHighResTimer (void);
+double getHighResTimerFrequency (void);
+void guessCpuType (void);
+void getCpuDescription (char *, int);
+unsigned long num_cpus (void);
+void doMiscTasks (void);
 #define stopCheck escapeCheck
-int escapeCheck ();
+int escapeCheck (void);
 #define	WORKING_ICON	0
 #define	IDLE_ICON	1
 void ChangeIcon (int);
@@ -100,7 +90,7 @@ void BlinkIcon (int);
 
 /* Common routines */
 
-void primeContinue ();
+void primeContinue (void);
 
 /* Routines used to time code chunks */
 extern double __timers[10];		/* 10 timers are available */
